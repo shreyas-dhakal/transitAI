@@ -1,0 +1,15 @@
+:root { --ink: #152019; --paper: #f4f0e5; --accent: #ec6a3b; }
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--paper); color: var(--ink); font: 18px/1.5 Arial, sans-serif; }
+.site-header { display: flex; justify-content: space-between; padding: 24px 5vw; border-bottom: 1px solid #b9b3a6; }
+.site-header a { color: inherit; font-weight: bold; margin-left: 18px; text-decoration: none; }
+.hero, .contact, .services { margin: 0 auto; max-width: 1100px; padding: 80px 5vw; }
+.hero h1, .contact h1 { font-size: clamp(48px, 9vw, 110px); letter-spacing: -.06em; line-height: .9; max-width: 900px; }
+.eyebrow { color: var(--accent); font-weight: bold; text-transform: uppercase; }
+.button, button { background: var(--ink); border: 0; color: white; display: inline-block; padding: 14px 20px; text-decoration: none; }
+.services { display: grid; gap: 12px; }
+.services article { border-top: 1px solid #b9b3a6; font-size: 28px; padding: 18px 0; }
+form { display: grid; gap: 18px; max-width: 620px; }
+label { display: grid; gap: 6px; }
+input, textarea { background: transparent; border: 1px solid #817b70; font: inherit; padding: 12px; }
+footer { padding: 30px 5vw; border-top: 1px solid #b9b3a6; }

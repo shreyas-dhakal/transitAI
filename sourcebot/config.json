@@ -1,0 +1,25 @@
+{
+    "$schema": "https://raw.githubusercontent.com/sourcebot-dev/sourcebot/main/schemas/v3/index.json",
+    "connections": {
+        "github": {
+            "type": "github",
+            "url": "https://github.com/shreyas-dhakal/portfolio_website",
+            "token": {
+                "env": "GITHUB_TOKEN"
+            },
+            "repos": [
+                "shreyas-dhakal/portfolio_website"
+            ]
+        }
+    },
+    "models": [
+        {
+            "provider": "openai",
+            "model": "gpt-5.6-luna",
+            "token": {
+                "env": "OPENAI_API_KEY"
+            },
+            "displayName": "shreyas"
+        }
+    ]
+}
