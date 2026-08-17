@@ -1,12 +1,13 @@
-"""Read-only GitHub repository intake with commit pinning.
+"""GitHub repository intake with commit pinning and migration branch export.
 
 The connector downloads GitHub's source archive for an exact commit SHA and then
-hands the bytes to the existing bounded ZIP inspector. It never clones or runs
-repository code.
+hands the bytes to the existing bounded ZIP inspector. Export uses GitHub's Git
+Data API and never clones or runs repository code.
 """
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import time
@@ -37,10 +38,34 @@ class GitHubSource:
         return f"{self.owner}/{self.repository}@{self.sha[:12]}"
 
 
+@dataclass(frozen=True)
+class GitHubPushResult:
+    branch: str
+    commit_sha: str
+    url: str
+
+
 def _valid_segment(value: str, label: str) -> str:
     value = value.strip()
     if not value or len(value) > 200 or value in {".", ".."} or any(char in value for char in "\x00\r\n"):
         raise ValueError(f"Invalid GitHub {label}.")
+    return value
+
+
+def _valid_branch_name(value: str) -> str:
+    value = value.strip()
+    if (
+        not value
+        or len(value) > 200
+        or value.startswith("/")
+        or value.endswith("/")
+        or "//" in value
+        or ".." in value
+        or "@{" in value
+        or any(char in value for char in "\x00\r\n~^:?*[\\")
+        or value.endswith(".")
+    ):
+        raise ValueError("Invalid GitHub branch name.")
     return value
 
 
@@ -119,6 +144,13 @@ def _read_bytes(request: Request, maximum: int) -> bytes:
             return b"".join(chunks)
     except HTTPError as error:
         detail = error.read(500).decode("utf-8", errors="replace")
+        if error.code == 403 and request.method in {"POST", "PUT", "PATCH", "DELETE"}:
+            raise RuntimeError(
+                "GitHub denied this write request. Grant the token or GitHub App "
+                "Contents: Read and write access to this repository, then retry. "
+                "GITHUB_TOKEN takes precedence over GitHub App credentials. "
+                f"GitHub response: {detail}"
+            ) from error
         raise RuntimeError(f"GitHub request failed ({error.code}): {detail}") from error
     except URLError as error:
         raise RuntimeError(f"GitHub request could not be completed: {error.reason}") from error
@@ -136,20 +168,27 @@ def _read_json(request: Request) -> dict[str, Any]:
 
 
 class GitHubClient:
-    """Read-only client for repository metadata, commit resolution, and archives."""
+    """GitHub client for repository intake and migration branch creation."""
 
     def __init__(self, token: str | None = None) -> None:
         self.token = token or _github_app_token()
 
-    def _request(self, path: str) -> Request:
+    def _request(self, path: str, method: str = "GET", payload: dict[str, Any] | None = None) -> Request:
+        body = None
+        headers = {
+            "Accept": "application/vnd.github+json",
+            "Authorization": f"Bearer {self.token}",
+            "X-GitHub-Api-Version": GITHUB_API_VERSION,
+            "User-Agent": "Transit-Migration/0.1",
+        }
+        if payload is not None:
+            body = json.dumps(payload).encode("utf-8")
+            headers["Content-Type"] = "application/json"
         return Request(
             f"{GITHUB_API}{path}",
-            headers={
-                "Accept": "application/vnd.github+json",
-                "Authorization": f"Bearer {self.token}",
-                "X-GitHub-Api-Version": GITHUB_API_VERSION,
-                "User-Agent": "Transit-Migration/0.1",
-            },
+            data=body,
+            method=method,
+            headers=headers,
         )
 
     def fetch_project(self, owner: str, repository: str, ref: str | None = None) -> tuple[LampProject, GitHubSource]:
@@ -172,3 +211,67 @@ class GitHubClient:
         archive = _read_bytes(archive_request, MAX_ARCHIVE_BYTES)
         source = GitHubSource(owner, repository, selected_ref, sha, default_branch)
         return inspect_lamp_zip(archive, f"{repository}-{sha[:12]}.zip"), source
+
+    def push_project(
+        self,
+        source: GitHubSource,
+        files: dict[str, bytes],
+        branch: str,
+        commit_message: str = "Add Transit migration",
+    ) -> GitHubPushResult:
+        """Create one commit containing files on a new branch from the pinned source."""
+        branch = _valid_branch_name(branch)
+        if not files:
+            raise ValueError("Cannot push an empty generated project.")
+        if not commit_message.strip() or len(commit_message) > 200:
+            raise ValueError("Commit message must be between 1 and 200 characters.")
+
+        repository_path = f"/repos/{quote(source.owner, safe='')}/{quote(source.repository, safe='')}"
+        blob_entries: list[dict[str, str]] = []
+        for path, content in sorted(files.items()):
+            blob = _read_json(
+                self._request(
+                    f"{repository_path}/git/blobs",
+                    method="POST",
+                    payload={"content": base64.b64encode(content).decode("ascii"), "encoding": "base64"},
+                )
+            )
+            blob_sha = str(blob.get("sha", ""))
+            if not blob_sha:
+                raise RuntimeError(f"GitHub did not return a blob SHA for {path}.")
+            blob_entries.append({"path": path, "mode": "100644", "type": "blob", "sha": blob_sha})
+
+        tree = _read_json(
+            self._request(
+                f"{repository_path}/git/trees",
+                method="POST",
+                payload={"base_tree": source.sha, "tree": blob_entries},
+            )
+        )
+        tree_sha = str(tree.get("sha", ""))
+        if not tree_sha:
+            raise RuntimeError("GitHub did not return a tree SHA.")
+
+        commit = _read_json(
+            self._request(
+                f"{repository_path}/git/commits",
+                method="POST",
+                payload={"message": commit_message.strip(), "tree": tree_sha, "parents": [source.sha]},
+            )
+        )
+        commit_sha = str(commit.get("sha", ""))
+        if not commit_sha:
+            raise RuntimeError("GitHub did not return a commit SHA.")
+
+        _read_json(
+            self._request(
+                f"{repository_path}/git/refs",
+                method="POST",
+                payload={"ref": f"refs/heads/{branch}", "sha": commit_sha},
+            )
+        )
+        return GitHubPushResult(
+            branch=branch,
+            commit_sha=commit_sha,
+            url=f"https://github.com/{source.owner}/{source.repository}/tree/{branch}",
+        )

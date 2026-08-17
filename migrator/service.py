@@ -259,14 +259,21 @@ def build_project_zip(
 ) -> bytes:
     """Package validated generated text and copied legacy assets into a ZIP."""
     output = BytesIO()
+    files = build_project_files(project, plan, generated)
+    with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for path, content in files.items():
+            archive.writestr(path, content)
+    return output.getvalue()
+
+
+def build_project_files(
+    project: LampProject, plan: MigrationPlan, generated: GeneratedProject
+) -> dict[str, bytes]:
+    """Return the exact generated project contents used by ZIP and GitHub export."""
     scaffold = _scaffold(project, plan)
     if {item.path for item in generated.files} & set(scaffold):
         raise ValueError("Generated files conflict with the deterministic scaffold.")
-    with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-        for path, content in scaffold.items():
-            archive.writestr(path, content)
-        for item in generated.files:
-            archive.writestr(item.path, item.content)
-        for asset in project.assets:
-            archive.writestr(asset.output_path, asset.content)
-    return output.getvalue()
+    files = {path: content.encode("utf-8") for path, content in scaffold.items()}
+    files.update({item.path: item.content.encode("utf-8") for item in generated.files})
+    files.update({asset.output_path: asset.content for asset in project.assets})
+    return files

@@ -1,11 +1,13 @@
 """Dependency-light tests for the migration safety boundary and happy path."""
 
 import unittest
+import json
 import zipfile
 from io import BytesIO
+from urllib.error import HTTPError
 from unittest.mock import patch
 
-from migrator import AzureLampMigrator, GitHubClient, build_project_zip, inspect_lamp_zip, parse_repository_url
+from migrator import AzureLampMigrator, GitHubClient, GitHubSource, build_project_zip, inspect_lamp_zip, parse_repository_url
 from migrator import github as github_module
 from migrator.models import GeneratedFile, GeneratedProject, MigrationPlan, RoutePlan
 
@@ -150,6 +152,63 @@ class MigratorTests(unittest.TestCase):
         self.assertEqual(project.inventory.route_candidates, ["/", "/page"])
         self.assertIn("/commits/feature%2Fhome", requests[1])
         self.assertIn("/zipball/0123456789abcdef0123456789abcdef01234567", requests[2])
+
+    def test_github_push_creates_blobs_tree_commit_and_branch(self):
+        sha = "0123456789abcdef0123456789abcdef01234567"
+        responses = [
+            b'{"sha":"blob-sha"}',
+            b'{"sha":"tree-sha"}',
+            b'{"sha":"commit-sha"}',
+            b'{"ref":"refs/heads/transit/migrate-site"}',
+        ]
+
+        class FakeResponse:
+            def __init__(self, body):
+                self.body = body
+                self.headers = {"Content-Length": str(len(body))}
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def read(self, size=-1):
+                body, self.body = self.body, b""
+                return body[:size]
+
+        requests = []
+
+        def fake_urlopen(request, timeout=30):
+            requests.append((request.full_url, request.method, json.loads(request.data)))
+            return FakeResponse(responses.pop(0))
+
+        source = GitHubSource("acme", "legacy-site", "main", sha, "main")
+        with patch.object(github_module, "urlopen", side_effect=fake_urlopen):
+            result = GitHubClient(token="test-token").push_project(
+                source, {"app/page.tsx": b"export default function Page() {}"}, "transit/migrate-site"
+            )
+
+        self.assertEqual(result.commit_sha, "commit-sha")
+        self.assertEqual([request[1] for request in requests], ["POST", "POST", "POST", "POST"])
+        self.assertEqual(requests[1][2]["base_tree"], sha)
+        self.assertEqual(requests[2][2]["parents"], [sha])
+        self.assertEqual(requests[3][2]["ref"], "refs/heads/transit/migrate-site")
+
+    def test_github_write_permission_error_is_actionable(self):
+        def denied_urlopen(request, timeout=30):
+            raise HTTPError(
+                request.full_url,
+                403,
+                "Forbidden",
+                {},
+                BytesIO(b'{"message":"Resource not accessible by personal access token"}'),
+            )
+
+        source = GitHubSource("acme", "legacy-site", "main", "0" * 40, "main")
+        with patch.object(github_module, "urlopen", side_effect=denied_urlopen):
+            with self.assertRaisesRegex(RuntimeError, "Contents: Read and write"):
+                GitHubClient(token="test-token").push_project(source, {"app/page.tsx": b"page"}, "transit/migrate")
 
 
 if __name__ == "__main__":

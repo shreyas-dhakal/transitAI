@@ -4,7 +4,7 @@ A lightweight LAMP-to-Next.js migration prototype powered by Azure OpenAI. Conne
 
 ## What It Does
 
-1. Connects to a GitHub repository through a read-only token or GitHub App installation credentials, or accepts a bounded ZIP upload.
+1. Connects to a GitHub repository through a GitHub token or App installation credentials, or accepts a bounded ZIP upload.
 2. Pins the GitHub branch or tag to an exact commit SHA and downloads GitHub's source archive for that commit.
 3. Validates ZIP paths, file counts, and compressed/uncompressed size limits.
 4. Reads bounded PHP, HTML, CSS, JavaScript, and SQL as text without extracting or executing the project.
@@ -14,6 +14,7 @@ A lightweight LAMP-to-Next.js migration prototype powered by Azure OpenAI. Conne
 6. Uses a second structured call to generate presentation-focused Next.js files.
 7. Rejects unsafe paths, API routes, unsupported imports, dangerous APIs, and incomplete output.
 9. Packages deterministic configuration, generated source, copied assets, and a migration report.
+10. For GitHub sources, creates a new branch with one migration commit in the same repository.
 
 The MVP deliberately does not recreate authentication, database access, email delivery, uploads, or arbitrary PHP behavior. It reports those as manual migration work and never executes uploaded or generated code.
 
@@ -32,7 +33,7 @@ AZURE_OPENAI_API_KEY=your-api-key
 AZURE_OPENAI_API_VERSION=2024-10-21
 AZURE_OPENAI_DEPLOYMENT=your-deployment-name
 
-# Local GitHub access. Use a fine-grained read-only token for development.
+# Local GitHub access. Use a fine-grained token with Contents read/write for branch export.
 GITHUB_TOKEN=
 
 # Production GitHub App installation access.
@@ -61,19 +62,19 @@ Select **ZIP upload**, upload `lamp-site.zip`, run analysis, review the plan, an
 
 ### GitHub Access
 
-For local development, set `GITHUB_TOKEN` to a fine-grained token with read-only access to the target repository. Transit never displays or sends this token to Azure OpenAI.
+For local development, set `GITHUB_TOKEN` to a fine-grained token with `Contents: Read and write` access to the target repository. Transit never displays or sends this token to Azure OpenAI.
 
 For hosted production use, create a GitHub App with the minimum permissions:
 
 | Permission | Access |
 |---|---|
 | Repository metadata | Read |
-| Repository contents | Read |
+| Repository contents | Read and write |
 | Pull requests | None initially |
 | Actions | None |
 | Administration | None |
 
-Set `GITHUB_APP_ID`, `GITHUB_INSTALLATION_ID`, and `GITHUB_PRIVATE_KEY`. Transit creates a short-lived installation token, resolves the selected ref to a SHA, and downloads the archive for that SHA. It does not clone, run hooks, install dependencies, or execute repository code.
+Set `GITHUB_APP_ID`, `GITHUB_INSTALLATION_ID`, and `GITHUB_PRIVATE_KEY`. Transit creates a short-lived installation token, resolves the selected ref to a SHA, downloads the archive for that SHA, and can create a new migration branch with one commit. It does not clone, run hooks, install dependencies, or execute repository code.
 
 The current UI assumes the GitHub App has already been installed and its installation ID is configured. OAuth installation and repository selection are the next control-plane layer for a multi-tenant hosted product.
 
@@ -90,7 +91,7 @@ uv run python -m compileall app.py main.py migrator tests
 
 - Input: GitHub repository ref or one ZIP up to 15 MB compressed and 40 MB uncompressed
 - Source: PHP, HTML, CSS, JavaScript, SQL, and common web assets
-- Output: Next.js App Router, React 19, TypeScript, content in Git
+- Output: Next.js App Router, React 19, TypeScript, content in a ZIP or a new GitHub branch
 - LLM: Azure OpenAI through `AzureChatOpenAI`
 - Safety: no repository cloning, source execution, generated execution, or arbitrary dependencies
 
@@ -179,8 +180,8 @@ These behaviors are detected and reported in `MIGRATION.md`; they are never inve
                                       │
                                       ▼
                          ┌────────────────────────┐
-                         │ Deterministic Packager  │
-                         │ Next.js scaffold + ZIP  │
+                          │ Deterministic Packager  │
+                          │ Next.js scaffold + ZIP  │
                          └────────────────────────┘
 ```
 
@@ -239,6 +240,9 @@ PACKAGE_PROJECT
   │
   ▼
 DOWNLOAD_FOR_HUMAN_REVIEW
+  │
+  ▼
+CREATE_NEW_GITHUB_BRANCH (GitHub source only)
 ```
 
 Each stage has a different authority:
@@ -553,7 +557,7 @@ Before exposing Transit to untrusted users, add:
 - Whether to add GitHub OAuth installation and repository selection for multi-tenant hosted use.
 - Whether to add URL-based runtime capture for authorized sites.
 - Whether to support a headless CMS output mode.
-- Whether to generate GitHub branches or pull requests directly after human approval.
+- Whether to create pull requests directly after human approval.
 - Which sandbox runtime will run Next.js builds.
 - How visual similarity should be scored and reviewed.
 - How customer data retention and deletion should be exposed.

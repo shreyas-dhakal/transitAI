@@ -5,12 +5,20 @@ from __future__ import annotations
 import hashlib
 import html
 import os
+import re
 from pathlib import Path
 
 import streamlit as st
 from dotenv import load_dotenv
 
-from migrator import AzureLampMigrator, GitHubClient, build_project_zip, inspect_lamp_zip, parse_repository_url
+from migrator import (
+    AzureLampMigrator,
+    GitHubClient,
+    build_project_files,
+    build_project_zip,
+    inspect_lamp_zip,
+    parse_repository_url,
+)
 from migrator.models import MigrationPlan
 
 
@@ -72,7 +80,7 @@ def render_sidebar() -> None:
             st.success("GitHub repository access configured")
         else:
             st.warning("GitHub access is not configured")
-            st.caption("Set `GITHUB_TOKEN` locally or GitHub App credentials for repository intake.")
+            st.caption("Set `GITHUB_TOKEN` locally or GitHub App credentials for repository intake and branch export.")
         st.divider()
         st.caption("Uploaded PHP is inspected as text. It is never extracted or executed. Generated code is packaged but not run.")
 
@@ -151,7 +159,7 @@ def main() -> None:
                     st.session_state["lamp_project"] = project
                     st.session_state["project_source"] = repository_key
                     st.session_state["github_source"] = source
-                    for key in ("migration_plan", "generated_project", "project_zip"):
+                    for key in ("migration_plan", "generated_project", "project_zip", "github_push_result", "migration_branch_name"):
                         st.session_state.pop(key, None)
                     status.update(label=f"Pinned to {source.sha[:12]}", state="complete")
             except (RuntimeError, ValueError) as error:
@@ -174,7 +182,7 @@ def main() -> None:
             try:
                 st.session_state["lamp_project"] = inspect_lamp_zip(data, uploaded.name)
                 st.session_state["project_source"] = zip_key
-                for key in ("migration_plan", "generated_project", "project_zip"):
+                for key in ("migration_plan", "generated_project", "project_zip", "github_source", "github_push_result", "migration_branch_name"):
                     st.session_state.pop(key, None)
             except ValueError as error:
                 st.error(str(error))
@@ -229,6 +237,32 @@ def main() -> None:
         mime="application/zip",
         use_container_width=True,
     )
+    github_source = st.session_state.get("github_source")
+    if github_source:
+        st.markdown("### Push to a new GitHub branch")
+        st.caption("The source ref stays unchanged. Transit creates one commit from the pinned source SHA.")
+        project_slug = re.sub(r"[^a-z0-9-]+", "-", st.session_state["lamp_project"].inventory.project_name.lower()).strip("-") or "project"
+        default_branch = f"transit/migrate-{project_slug[:80]}"
+        branch_name = st.text_input("New branch name", value=default_branch, key="migration_branch_name")
+        if st.button("Create migration branch", type="primary", use_container_width=True):
+            try:
+                with st.status("Writing the migration to GitHub...", expanded=True) as status:
+                    st.write("Creating generated file blobs")
+                    files = build_project_files(st.session_state["lamp_project"], plan, generated)
+                    result = GitHubClient().push_project(
+                        github_source,
+                        files,
+                        branch_name,
+                        commit_message=f"Add Transit migration for {st.session_state['lamp_project'].inventory.project_name}",
+                    )
+                    st.session_state["github_push_result"] = result
+                    status.update(label="Migration branch created", state="complete")
+            except (RuntimeError, ValueError) as error:
+                st.error(f"GitHub export failed: {error}")
+        result = st.session_state.get("github_push_result")
+        if result:
+            st.success(f"Created `{result.branch}` at commit `{result.commit_sha[:12]}`.")
+            st.link_button("Open migration branch on GitHub", result.url, use_container_width=True)
 
 
 if __name__ == "__main__":
