@@ -1,7 +1,7 @@
 [project]
 name = "transit"
 version = "0.1.0"
-description = "Lightweight LAMP-to-Next.js migration prototype powered by Azure OpenAI"
+description = "Lightweight legacy web-project migration prototype powered by Azure OpenAI"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [

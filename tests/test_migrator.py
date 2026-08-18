@@ -7,7 +7,17 @@ from io import BytesIO
 from urllib.error import HTTPError
 from unittest.mock import patch
 
-from migrator import AzureLampMigrator, GitHubClient, GitHubSource, build_project_zip, inspect_lamp_zip, parse_repository_url
+from migrator import (
+    AdapterFindings,
+    AdapterRegistry,
+    AzureLampMigrator,
+    GitHubClient,
+    GitHubSource,
+    build_project_zip,
+    inspect_lamp_zip,
+    inspect_project,
+    parse_repository_url,
+)
 from migrator import github as github_module
 from migrator.models import GeneratedFile, GeneratedProject, MigrationPlan, RoutePlan
 
@@ -95,6 +105,65 @@ class MigratorTests(unittest.TestCase):
             archive.writestr("../outside.php", "<?php echo 'bad';")
         with self.assertRaisesRegex(ValueError, "Unsafe archive member path"):
             inspect_lamp_zip(output.getvalue())
+
+    def test_universal_adapter_inspects_non_php_web_sources(self):
+        output = BytesIO()
+        with zipfile.ZipFile(output, "w") as archive:
+            archive.writestr("site/home.html", "<form action='/contact'><input type='file'></form>")
+            archive.writestr("site/server.py", "users = db.execute('SELECT * FROM users')")
+            archive.writestr("site/schema.sql", "CREATE TABLE users (id INT PRIMARY KEY);")
+
+        project = inspect_project(output.getvalue(), "site.zip")
+
+        self.assertEqual(project.inventory.adapter, "universal-web+structural-graph")
+        self.assertEqual(project.inventory.adapter_sources, ["universal-web", "structural-graph"])
+        self.assertEqual(project.inventory.route_candidates, ["/home"])
+        self.assertIn("Python", project.inventory.detected_technologies)
+        self.assertIn("Database reads or writes", project.inventory.behavior_signals)
+        self.assertIsNotNone(project.findings[1].graph)
+
+    def test_registry_composes_registered_adapters(self):
+        class CustomAdapter:
+            name = "custom-runtime"
+
+            def detect(self, sources):
+                return (0.8, ["custom manifest"])
+
+            def inspect(self, sources):
+                return AdapterFindings(["Custom runtime"], ["/custom"], [], [])
+
+        output = BytesIO()
+        with zipfile.ZipFile(output, "w") as archive:
+            archive.writestr("project/index.html", "<main />")
+
+        registry = AdapterRegistry.with_defaults()
+        registry.register(CustomAdapter())
+        project = inspect_project(output.getvalue(), registry=registry)
+
+        self.assertIn("custom-runtime", project.inventory.adapter_sources)
+        self.assertIn("Custom runtime", project.inventory.detected_technologies)
+
+    def test_custom_source_adapter_can_enrich_snapshot(self):
+        output = BytesIO()
+        with zipfile.ZipFile(output, "w") as archive:
+            archive.writestr("project/main.txt", "evidence")
+
+        class CustomAdapter:
+            name = "custom-runtime"
+
+            def inspect(self, sources):
+                return AdapterFindings(
+                    detected_technologies=["Custom runtime"],
+                    route_candidates=["/custom"],
+                    database_tables=[],
+                    behavior_signals=["Custom behavior"],
+                )
+
+        project = inspect_project(output.getvalue(), adapter=CustomAdapter())
+
+        self.assertEqual(project.inventory.adapter, "custom-runtime")
+        self.assertEqual(project.inventory.route_candidates, ["/custom"])
+        self.assertEqual(project.inventory.detected_technologies, ["Custom runtime"])
 
     def test_end_to_end_generation_packages_scaffold_and_assets(self):
         project = inspect_lamp_zip(project_archive(), "legacy.zip")

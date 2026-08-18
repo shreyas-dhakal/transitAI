@@ -5,6 +5,7 @@ from pydantic import BaseModel, Field
 
 class ProjectInventory(BaseModel):
     project_name: str
+    adapter: str = "universal-web"
     file_count: int
     source_file_count: int
     asset_count: int
@@ -16,6 +17,7 @@ class ProjectInventory(BaseModel):
     behavior_signals: list[str]
     skipped_sensitive_files: list[str]
     truncated: bool = False
+    adapter_sources: list[str] = Field(default_factory=list)
 
 
 class RoutePlan(BaseModel):

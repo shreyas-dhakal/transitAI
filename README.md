@@ -1,13 +1,18 @@
 # Transit
 
-A lightweight LAMP-to-Next.js migration prototype powered by Azure OpenAI. Connect a GitHub repository or upload a small PHP project ZIP, review a structured migration plan, and download a guarded Next.js App Router starter.
+A lightweight legacy web-project migration prototype powered by Azure OpenAI. Connect a GitHub repository or upload a project ZIP, review a structured migration plan, and download a guarded Next.js App Router starter.
+
+Transit uses a universal web source adapter rather than coupling archive intake to one
+language or framework. The adapter produces deterministic evidence for routes, assets,
+technologies, data access, and behavior. Framework-specific recognizers can enrich that
+evidence later without changing the migration pipeline.
 
 ## What It Does
 
 1. Connects to a GitHub repository through a GitHub token or App installation credentials, or accepts a bounded ZIP upload.
 2. Pins the GitHub branch or tag to an exact commit SHA and downloads GitHub's source archive for that commit.
 3. Validates ZIP paths, file counts, and compressed/uncompressed size limits.
-4. Reads bounded PHP, HTML, CSS, JavaScript, and SQL as text without extracting or executing the project.
+4. Reads bounded source files as text without extracting or executing the project.
 3. Omits sensitive filenames and redacts common inline credential assignments before model calls.
 4. Inventories likely routes, assets, database tables, and server-side behaviors locally.
 5. Uses Azure OpenAI structured output to produce a migration plan.
@@ -90,7 +95,7 @@ uv run python -m compileall app.py main.py migrator tests
 ## Current Boundary
 
 - Input: GitHub repository ref or one ZIP up to 15 MB compressed and 40 MB uncompressed
-- Source: PHP, HTML, CSS, JavaScript, SQL, and common web assets
+- Source: common web-project files including PHP, HTML, CSS, JavaScript, TypeScript, SQL, and common web assets
 - Output: Next.js App Router, React 19, TypeScript, content in a ZIP or a new GitHub branch
 - LLM: Azure OpenAI through `AzureChatOpenAI`
 - Safety: no repository cloning, source execution, generated execution, or arbitrary dependencies
@@ -152,9 +157,9 @@ These behaviors are detected and reported in `MIGRATION.md`; they are never inve
                                       │
                                       ▼
                          ┌────────────────────────┐
-                         │ Deterministic Inspector│
-                         │ Routes / Assets / SQL  │
-                         │ Behavior / Redaction   │
+                          │ Intake + Adapter Layer│
+                          │ Limits / Redaction    │
+                          │ Routes / Graph / SQL  │
                          └────────────┬───────────┘
                                       │
                            ProjectInventory +
@@ -193,7 +198,8 @@ The current implementation is a modular monolith. The UI, inspector, Azure clien
 app.py                     Streamlit application and review flow
 main.py                    CLI entrypoint and developer guidance
 migrator/models.py         Pydantic data contracts
-migrator/archive.py        Safe ZIP inspection and local inventory
+migrator/archive.py        Safe ZIP intake and snapshot assembly
+migrator/adapters.py       Registry, composition, evidence, and graph findings
 migrator/service.py        Azure calls, generated-code validation, packaging
 examples/lamp-site/        Small PHP fixture for manual testing
 sourcebot/                 Existing local Sourcebot integration files
@@ -204,7 +210,8 @@ Responsibilities are separated as follows:
 | Component | Responsibility | Must not do |
 |---|---|---|
 | `app.py` | Collect GitHub or ZIP input, show inventory and plan, trigger stages, download output | Inspect or execute PHP directly |
-| `archive.py` | Validate ZIPs, inspect text, detect routes and behaviors, copy assets | Execute source or make LLM calls |
+| `archive.py` | Validate ZIPs, sanitize source text, assemble snapshots, copy assets | Execute source or make LLM calls |
+| `adapters.py` | Detect, compose, and interpret normalized source evidence | Read raw archives or execute source |
 | `models.py` | Define validated inventory, plan, and generated-file contracts | Contain business logic |
 | `service.py` | Call Azure OpenAI, validate output, build the generated ZIP | Execute generated code |
 | `tests/` | Verify security boundary and packaging behavior | Require Azure credentials |
@@ -274,13 +281,14 @@ This filtering is defense in depth, not a guarantee that secrets cannot exist in
 
 ### 7. Deterministic Source Inspection
 
-`migrator/archive.py` extracts facts without executing PHP or JavaScript.
+`migrator/archive.py` enforces the intake boundary. `migrator/adapters.py` interprets normalized evidence without executing source.
 
 The inspector currently identifies:
 
 - Source file inventory.
 - Static asset inventory.
-- PHP route candidates.
+- Page and template route candidates.
+- Optional file and symbol dependency graph findings.
 - Common frameworks and libraries such as PHP, MySQL, WordPress, jQuery, Bootstrap, and Apache.
 - SQL `CREATE TABLE` names.
 - HTML forms.

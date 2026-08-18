@@ -17,7 +17,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import quote, unquote, urlparse
 from urllib.request import Request, urlopen
 
-from migrator.archive import MAX_ARCHIVE_BYTES, LampProject, inspect_lamp_zip
+from migrator.archive import MAX_ARCHIVE_BYTES, ProjectSnapshot, inspect_project
 
 
 GITHUB_API = "https://api.github.com"
@@ -191,7 +191,7 @@ class GitHubClient:
             headers=headers,
         )
 
-    def fetch_project(self, owner: str, repository: str, ref: str | None = None) -> tuple[LampProject, GitHubSource]:
+    def fetch_project(self, owner: str, repository: str, ref: str | None = None) -> tuple[ProjectSnapshot, GitHubSource]:
         owner = _valid_segment(owner, "owner")
         repository = _valid_segment(repository, "repository")
         metadata = _read_json(self._request(f"/repos/{quote(owner, safe='')}/{quote(repository, safe='')}"))
@@ -210,7 +210,7 @@ class GitHubClient:
         )
         archive = _read_bytes(archive_request, MAX_ARCHIVE_BYTES)
         source = GitHubSource(owner, repository, selected_ref, sha, default_branch)
-        return inspect_lamp_zip(archive, f"{repository}-{sha[:12]}.zip"), source
+        return inspect_project(archive, f"{repository}-{sha[:12]}.zip"), source
 
     def push_project(
         self,

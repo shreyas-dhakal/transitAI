@@ -1,4 +1,4 @@
-"""Streamlit UI for the lightweight LAMP-to-Next.js migration prototype."""
+"""Streamlit UI for the lightweight web-project migration prototype."""
 
 from __future__ import annotations
 
@@ -12,11 +12,11 @@ import streamlit as st
 from dotenv import load_dotenv
 
 from migrator import (
-    AzureLampMigrator,
+    AzureMigrationEngine,
     GitHubClient,
     build_project_files,
     build_project_zip,
-    inspect_lamp_zip,
+    inspect_project,
     parse_repository_url,
 )
 from migrator.models import MigrationPlan
@@ -67,7 +67,7 @@ def render_sidebar() -> None:
     with st.sidebar:
         st.markdown('<div class="eyebrow">TRANSIT / MIGRATION LAB</div>', unsafe_allow_html=True)
         st.markdown("## Conversion boundary")
-        st.markdown("**Input**  \nLAMP project ZIP")
+        st.markdown("**Input**  \nLegacy web project ZIP")
         st.markdown("**Output**  \nNext.js App Router")
         st.markdown("**Content**  \nTypeScript files in Git")
         st.divider()
@@ -82,11 +82,11 @@ def render_sidebar() -> None:
             st.warning("GitHub access is not configured")
             st.caption("Set `GITHUB_TOKEN` locally or GitHub App credentials for repository intake and branch export.")
         st.divider()
-        st.caption("Uploaded PHP is inspected as text. It is never extracted or executed. Generated code is packaged but not run.")
+        st.caption("Uploaded source is inspected as text. It is never extracted or executed. Generated code is packaged but not run.")
 
 
 def render_inventory() -> None:
-    inventory = st.session_state["lamp_project"].inventory
+    inventory = st.session_state["project_snapshot"].inventory
     columns = st.columns(4)
     values = [
         ("Source files", inventory.source_file_count),
@@ -134,12 +134,12 @@ def render_plan(plan: MigrationPlan) -> None:
 
 
 def main() -> None:
-    st.set_page_config(page_title="Transit · LAMP Migration Lab", page_icon="↗", layout="wide")
+    st.set_page_config(page_title="Transit · Migration Lab", page_icon="↗", layout="wide")
     inject_theme()
     render_sidebar()
-    st.markdown('<div class="eyebrow">LAMP → NEXT.JS / CONTROLLED CONVERSION</div>', unsafe_allow_html=True)
+    st.markdown('<div class="eyebrow">LEGACY WEB → MODERN STACK / CONTROLLED CONVERSION</div>', unsafe_allow_html=True)
     st.title("Move the site. Leave the legacy behind.")
-    st.markdown('<p class="lede">Upload a small PHP project. Transit inventories its routes, assets, database signals, and server behavior, then uses Azure OpenAI to produce a reviewable migration plan and clean Next.js starter.</p>', unsafe_allow_html=True)
+    st.markdown('<p class="lede">Upload a legacy web project. Transit inventories its routes, assets, data signals, and server behavior, then uses Azure OpenAI to produce a reviewable migration plan and clean modern starter.</p>', unsafe_allow_html=True)
     st.markdown('<div class="rule"></div>', unsafe_allow_html=True)
     st.markdown('<div class="eyebrow">01 / SOURCE INTAKE</div>', unsafe_allow_html=True)
     source_kind = st.radio("Source", ["GitHub repository", "ZIP upload"], horizontal=True)
@@ -156,7 +156,7 @@ def main() -> None:
                 with st.status("Connecting to GitHub...", expanded=True) as status:
                     st.write("Resolving the selected ref to an immutable commit SHA")
                     project, source = GitHubClient().fetch_project(owner, repository, ref)
-                    st.session_state["lamp_project"] = project
+                    st.session_state["project_snapshot"] = project
                     st.session_state["project_source"] = repository_key
                     st.session_state["github_source"] = source
                     for key in ("migration_plan", "generated_project", "project_zip", "github_push_result", "migration_branch_name"):
@@ -171,7 +171,7 @@ def main() -> None:
         if source:
             st.caption(f"Read-only source: `{source.label}` · ref `{source.ref}` · default branch `{source.default_branch}`")
     else:
-        uploaded = st.file_uploader("LAMP project ZIP", type=["zip"], help="Maximum upload: 15 MB compressed and 40 MB uncompressed.")
+        uploaded = st.file_uploader("Legacy web project ZIP", type=["zip"], help="Maximum upload: 15 MB compressed and 40 MB uncompressed.")
         if uploaded is None:
             st.info("Try the included `examples/lamp-site` project: ZIP that directory and upload it here.")
             return
@@ -180,7 +180,7 @@ def main() -> None:
         zip_key = f"zip:{digest}"
         if st.session_state.get("project_source") != zip_key:
             try:
-                st.session_state["lamp_project"] = inspect_lamp_zip(data, uploaded.name)
+                st.session_state["project_snapshot"] = inspect_project(data, uploaded.name)
                 st.session_state["project_source"] = zip_key
                 for key in ("migration_plan", "generated_project", "project_zip", "github_source", "github_push_result", "migration_branch_name"):
                     st.session_state.pop(key, None)
@@ -193,7 +193,7 @@ def main() -> None:
         try:
             with st.status("Reading the legacy shape...", expanded=True) as status:
                 st.write("Sending bounded, secret-filtered source evidence to Azure OpenAI")
-                plan = AzureLampMigrator().analyze(st.session_state["lamp_project"])
+                plan = AzureMigrationEngine().analyze(st.session_state["project_snapshot"])
                 st.session_state["migration_plan"] = plan
                 st.session_state.pop("generated_project", None)
                 st.session_state.pop("project_zip", None)
@@ -213,10 +213,10 @@ def main() -> None:
         try:
             with st.status("Compiling the migration...", expanded=True) as status:
                 st.write("Generating schema-constrained Next.js source")
-                generated = AzureLampMigrator().generate(st.session_state["lamp_project"], plan)
+                generated = AzureMigrationEngine().generate(st.session_state["project_snapshot"], plan)
                 st.write("Validating paths, imports, required files, and unsafe APIs")
                 st.session_state["generated_project"] = generated
-                st.session_state["project_zip"] = build_project_zip(st.session_state["lamp_project"], plan, generated)
+                st.session_state["project_zip"] = build_project_zip(st.session_state["project_snapshot"], plan, generated)
                 status.update(label="Next.js starter ready", state="complete")
         except Exception as error:
             st.error(f"Generation stopped safely: {error}")
@@ -224,7 +224,7 @@ def main() -> None:
     generated = st.session_state.get("generated_project")
     if not generated:
         return
-    st.success(f"Generated {len(generated.files)} source files and copied {st.session_state['lamp_project'].inventory.asset_count} static assets.")
+    st.success(f"Generated {len(generated.files)} source files and copied {st.session_state['project_snapshot'].inventory.asset_count} static assets.")
     with st.expander("Generated file manifest", expanded=True):
         for item in generated.files:
             st.markdown(f"`{item.path}` · {item.purpose}")
@@ -233,7 +233,7 @@ def main() -> None:
     st.download_button(
         "Download Next.js project ZIP",
         data=st.session_state["project_zip"],
-        file_name=f"{st.session_state['lamp_project'].inventory.project_name}-nextjs.zip",
+        file_name=f"{st.session_state['project_snapshot'].inventory.project_name}-nextjs.zip",
         mime="application/zip",
         use_container_width=True,
     )
@@ -241,19 +241,19 @@ def main() -> None:
     if github_source:
         st.markdown("### Push to a new GitHub branch")
         st.caption("The source ref stays unchanged. Transit creates one commit from the pinned source SHA.")
-        project_slug = re.sub(r"[^a-z0-9-]+", "-", st.session_state["lamp_project"].inventory.project_name.lower()).strip("-") or "project"
+        project_slug = re.sub(r"[^a-z0-9-]+", "-", st.session_state["project_snapshot"].inventory.project_name.lower()).strip("-") or "project"
         default_branch = f"transit/migrate-{project_slug[:80]}"
         branch_name = st.text_input("New branch name", value=default_branch, key="migration_branch_name")
         if st.button("Create migration branch", type="primary", use_container_width=True):
             try:
                 with st.status("Writing the migration to GitHub...", expanded=True) as status:
                     st.write("Creating generated file blobs")
-                    files = build_project_files(st.session_state["lamp_project"], plan, generated)
+                    files = build_project_files(st.session_state["project_snapshot"], plan, generated)
                     result = GitHubClient().push_project(
                         github_source,
                         files,
                         branch_name,
-                        commit_message=f"Add Transit migration for {st.session_state['lamp_project'].inventory.project_name}",
+                        commit_message=f"Add Transit migration for {st.session_state['project_snapshot'].inventory.project_name}",
                     )
                     st.session_state["github_push_result"] = result
                     status.update(label="Migration branch created", state="complete")

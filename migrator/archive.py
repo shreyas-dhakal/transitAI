@@ -1,13 +1,20 @@
-"""Bounded, non-executing inspection of uploaded LAMP project archives."""
+"""Bounded, non-executing inspection of uploaded project archives."""
 
 from __future__ import annotations
 
 import re
 import zipfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from io import BytesIO
 from pathlib import PurePosixPath
 
+from migrator.adapters import (
+    AdapterFindings,
+    AdapterRegistry,
+    SourceAdapter,
+    UniversalWebAdapter,
+    merge_findings,
+)
 from migrator.models import ProjectInventory
 
 
@@ -18,16 +25,16 @@ MAX_SOURCE_FILE_BYTES = 300 * 1024
 MAX_CONTEXT_CHARS = 120_000
 MAX_ASSET_BYTES = 5 * 1024 * 1024
 
-SOURCE_EXTENSIONS = {".php", ".phtml", ".html", ".htm", ".css", ".js", ".sql", ".xml", ".json", ".md", ".txt"}
+SOURCE_EXTENSIONS = {
+    ".aspx", ".asp", ".cfm", ".cs", ".css", ".erb", ".go", ".html", ".htm",
+    ".java", ".js", ".jsx", ".json", ".jsp", ".md", ".php", ".phtml", ".py",
+    ".rb", ".rs", ".sql", ".svelte", ".ts", ".tsx", ".txt", ".vue", ".xml",
+}
 ASSET_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".ico", ".woff", ".woff2", ".ttf", ".otf"}
 SENSITIVE_NAMES = {
     ".env", ".htpasswd", "config.php", "credentials.json", "database.php",
     "id_ed25519", "id_rsa", "secrets.json", "settings.php", "wp-config.php",
 }
-NON_ROUTE_DIRECTORIES = {"config", "includes", "partials", "vendor", "lib", "src", "tests"}
-NON_ROUTE_STEMS = {"bootstrap", "config", "database", "db", "footer", "functions", "header", "helpers"}
-
-
 @dataclass(frozen=True)
 class ProjectAsset:
     source_path: str
@@ -36,10 +43,11 @@ class ProjectAsset:
 
 
 @dataclass(frozen=True)
-class LampProject:
+class ProjectSnapshot:
     inventory: ProjectInventory
     source_context: str
     assets: list[ProjectAsset]
+    findings: list[AdapterFindings] = field(default_factory=list)
 
 
 def _safe_path(raw_path: str) -> PurePosixPath:
@@ -76,50 +84,15 @@ def _redact_secrets(content: str) -> str:
     return re.sub(r"(?i)mysql://[^\s'\"]+", "mysql://[REDACTED]", content)
 
 
-def _php_route(path: PurePosixPath) -> str:
-    parts = list(path.with_suffix("").parts)
-    if parts and parts[-1].lower() == "index":
-        parts.pop()
-    return "/" + "/".join(parts)
-
-
-def _is_php_route(path: PurePosixPath) -> bool:
-    return (
-        path.suffix.lower() in {".php", ".phtml"}
-        and path.stem.lower() not in NON_ROUTE_STEMS
-        and not any(part.lower() in NON_ROUTE_DIRECTORIES for part in path.parts[:-1])
-    )
-
-
-def _technology_signals(paths: list[str], combined_text: str) -> list[str]:
-    lowered_paths = [path.lower() for path in paths]
-    checks = [
-        ("PHP", any(path.endswith((".php", ".phtml")) for path in lowered_paths)),
-        ("MySQL", bool(re.search(r"(?i)\b(mysql|mysqli|pdo)\b", combined_text))),
-        ("Apache", any(path.endswith(".htaccess") for path in lowered_paths)),
-        ("WordPress", any("wp-content" in path or "wp-config" in path for path in lowered_paths)),
-        ("jQuery", bool(re.search(r"(?i)\bjquery\b|\$\s*\(", combined_text))),
-        ("Bootstrap", bool(re.search(r"(?i)\bbootstrap\b", combined_text))),
-    ]
-    signals = [label for label, found in checks if found]
-    return signals or ["HTML/CSS"]
-
-
-def _behavior_signals(combined_text: str) -> list[str]:
-    checks = [
-        ("HTML form submission", r"(?i)<form\b"),
-        ("Session-backed behavior", r"(?i)\bsession_start\s*\(|\$_SESSION"),
-        ("Database reads or writes", r"(?i)\b(SELECT|INSERT|UPDATE|DELETE)\b|->query\s*\("),
-        ("Email delivery", r"(?i)\bmail\s*\("),
-        ("File uploads", r"(?i)multipart/form-data|\$_FILES"),
-        ("Server-side includes", r"(?i)\b(include|require)(_once)?\s*[\s(]"),
-        ("AJAX requests", r"(?i)\b(fetch|XMLHttpRequest|\$\.ajax)\b"),
-    ]
-    return [label for label, pattern in checks if re.search(pattern, combined_text)]
-
-
-def inspect_lamp_zip(data: bytes, filename: str = "lamp-project.zip") -> LampProject:
+def inspect_project(
+    data: bytes,
+    filename: str = "project.zip",
+    adapter: SourceAdapter | None = None,
+    registry: AdapterRegistry | None = None,
+) -> ProjectSnapshot:
     """Inspect an archive in memory without extracting or executing its contents."""
+    if adapter is not None and registry is not None:
+        raise ValueError("Pass either adapter or registry, not both.")
     if not data:
         raise ValueError("The uploaded archive is empty.")
     if len(data) > MAX_ARCHIVE_BYTES:
@@ -180,23 +153,51 @@ def inspect_lamp_zip(data: bytes, filename: str = "lamp-project.zip") -> LampPro
         context_parts.append(section)
         context_size += len(section)
 
-    combined_text = "\n".join(sources.values())
-    routes = sorted({_php_route(PurePosixPath(path)) for path in sources if _is_php_route(PurePosixPath(path))})
-    tables = sorted(set(re.findall(r"(?i)CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?[`\"]?([A-Za-z0-9_]+)", combined_text)))
+    if adapter is not None:
+        findings = [adapter.inspect(sources)]
+        if not findings[0].adapter_name:
+            findings[0] = AdapterFindings(
+                findings[0].detected_technologies,
+                findings[0].route_candidates,
+                findings[0].database_tables,
+                findings[0].behavior_signals,
+                findings[0].graph,
+                adapter.name,
+            )
+    else:
+        findings = (registry or AdapterRegistry.with_defaults()).inspect(sources)
+    merged = merge_findings(findings)
     asset_urls = ["/" + asset.output_path.removeprefix("public/") for asset in assets]
-    project_name = re.sub(r"\.zip$", "", PurePosixPath(filename).name, flags=re.IGNORECASE) or "lamp-project"
+    project_name = re.sub(r"\.zip$", "", PurePosixPath(filename).name, flags=re.IGNORECASE) or "migrated-project"
     inventory = ProjectInventory(
         project_name=project_name,
+        adapter=merged.adapter_name,
         file_count=len(members),
         source_file_count=len(sources),
         asset_count=len(assets),
         source_files=sorted(sources),
         asset_urls=asset_urls,
-        detected_technologies=_technology_signals(list(sources), combined_text),
-        route_candidates=routes or ["/"],
-        database_tables=tables,
-        behavior_signals=_behavior_signals(combined_text),
+        detected_technologies=merged.detected_technologies,
+        route_candidates=merged.route_candidates or ["/"],
+        database_tables=merged.database_tables,
+        behavior_signals=merged.behavior_signals,
         skipped_sensitive_files=sorted(skipped_sensitive),
         truncated=truncated,
+        adapter_sources=[finding.adapter_name for finding in findings],
     )
-    return LampProject(inventory=inventory, source_context="".join(context_parts), assets=assets)
+    return ProjectSnapshot(
+        inventory=inventory,
+        source_context="".join(context_parts),
+        assets=assets,
+        findings=findings,
+    )
+
+
+# Kept as a small compatibility alias for existing callers while the generic
+# inspection API becomes the primary integration point.
+LampProject = ProjectSnapshot
+
+
+def inspect_lamp_zip(data: bytes, filename: str = "lamp-project.zip") -> ProjectSnapshot:
+    """Compatibility wrapper retaining the original single-adapter behavior."""
+    return inspect_project(data, filename, adapter=UniversalWebAdapter())
