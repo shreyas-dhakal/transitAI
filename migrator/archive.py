@@ -15,7 +15,11 @@ from migrator.adapters import (
     UniversalWebAdapter,
     merge_findings,
 )
-from migrator.models import ProjectInventory
+from migrator.cir import CanonicalIR, compile_cir
+from migrator.models import ProjectInventory, WesleyAssessment
+from migrator.models import MigrationBlueprint
+from migrator.migration import build_migration_blueprint
+from migrator.wesley import assess_project
 
 
 MAX_ARCHIVE_BYTES = 15 * 1024 * 1024
@@ -48,6 +52,10 @@ class ProjectSnapshot:
     source_context: str
     assets: list[ProjectAsset]
     findings: list[AdapterFindings] = field(default_factory=list)
+    sources: dict[str, str] = field(default_factory=dict)
+    cir: CanonicalIR | None = None
+    wesley: WesleyAssessment | None = None
+    migration: MigrationBlueprint | None = None
 
 
 def _safe_path(raw_path: str) -> PurePosixPath:
@@ -185,11 +193,24 @@ def inspect_project(
         truncated=truncated,
         adapter_sources=[finding.adapter_name for finding in findings],
     )
-    return ProjectSnapshot(
+    snapshot = ProjectSnapshot(
         inventory=inventory,
         source_context="".join(context_parts),
         assets=assets,
         findings=findings,
+        sources=sources,
+        cir=compile_cir(inventory, sources, assets, findings),
+    )
+    wesley = assess_project(inventory, sources)
+    return ProjectSnapshot(
+        inventory=snapshot.inventory,
+        source_context=snapshot.source_context,
+        assets=snapshot.assets,
+        findings=snapshot.findings,
+        sources=snapshot.sources,
+        cir=snapshot.cir,
+        wesley=wesley,
+        migration=build_migration_blueprint(snapshot.cir, wesley) if snapshot.cir else None,
     )
 
 

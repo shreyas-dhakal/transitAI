@@ -18,8 +18,16 @@ from migrator import (
     inspect_project,
     parse_repository_url,
 )
+from migrator.cir import (
+    BehaviorClaim,
+    BehaviorExtraction,
+    BehaviorSample,
+    SampleMetadata,
+    aggregate_claims,
+)
 from migrator import github as github_module
-from migrator.models import GeneratedFile, GeneratedProject, MigrationPlan, RoutePlan
+from migrator.models import GeneratedFile, GeneratedProject, MigrationPlan, MigrationUnit, RoutePlan
+from migrator.wesley import assess_project
 
 
 def project_archive() -> bytes:
@@ -122,6 +130,133 @@ class MigratorTests(unittest.TestCase):
         self.assertIn("Database reads or writes", project.inventory.behavior_signals)
         self.assertIsNotNone(project.findings[1].graph)
 
+    def test_snapshot_contains_deterministic_cir_with_provenance(self):
+        project = inspect_lamp_zip(project_archive(), "legacy.zip")
+
+        self.assertIsNotNone(project.cir)
+        self.assertEqual(project.cir.provenance.schema_version, "1.0")
+        self.assertEqual(project.cir.provenance.source_hash, inspect_lamp_zip(project_archive(), "legacy.zip").cir.provenance.source_hash)
+        self.assertEqual(project.cir.routes[0].pattern, "/")
+        self.assertIn("messages", [entity.name for entity in project.cir.entities])
+        self.assertTrue(project.cir.provenance.sample_set_hash)
+        self.assertIsNotNone(project.migration)
+        self.assertEqual(project.migration.target_profile, "nextjs-app-router")
+        self.assertTrue(project.migration.waves)
+
+    def test_migration_blueprint_is_carried_into_azure_plan(self):
+        project = inspect_lamp_zip(project_archive(), "legacy.zip")
+        migration_plan = AzureLampMigrator(client=FakeClient()).analyze(project)
+
+        self.assertEqual(migration_plan.strategy, project.migration.strategy)
+        self.assertEqual(
+            [unit.unit_id for unit in migration_plan.migration_units],
+            [unit.unit_id for unit in project.migration.units],
+        )
+        self.assertEqual(migration_plan.approval_status, "pending")
+
+    def test_wesley_reengineers_known_insecure_php(self):
+        project = inspect_lamp_zip(project_archive(), "legacy.zip")
+        assessment = assess_project(project.inventory, {"index.php": "<?php mysql_query($query);"})
+
+        self.assertEqual(assessment.overall_classification, "reengineer")
+        self.assertTrue(any(
+            signal.value == "PHP mysql_* API"
+            for signal in assessment.signals
+        ))
+
+    def test_wesley_preserves_unknown_repository_signals(self):
+        inventory = project_archive()
+        project = inspect_lamp_zip(inventory, "legacy.zip")
+        unknown = {signal.name for signal in project.wesley.signals if signal.status == "unknown"}
+
+        self.assertIn("commit recency", unknown)
+        self.assertIn("test churn", unknown)
+        self.assertIn("dependency CVEs", unknown)
+        self.assertTrue(project.wesley.limitations)
+
+    def test_wesley_detects_runtime_and_dependency_lag(self):
+        sources = {
+            "index.php": "<?php echo 'home';",
+            "composer.json": '{"require":{"jquery":"1.12.4"},"config":{"php":"7.4"}}',
+        }
+        project = inspect_lamp_zip(project_archive(), "legacy.zip")
+        assessment = assess_project(project.inventory, sources)
+        statuses = {(signal.name, signal.status) for signal in assessment.signals}
+
+        self.assertIn(("PHP runtime version", "stale"), statuses)
+        self.assertIn(("dependency version lag", "stale"), statuses)
+        self.assertIn(assessment.overall_classification, {"replace", "reengineer", "coexist"})
+
+    def test_cir_claim_aggregation_preserves_disagreement(self):
+        def sample(sample_id, model, text):
+            return BehaviorSample(
+                sample_id=sample_id,
+                unit_id="behavior:form-submission",
+                claims=[BehaviorClaim(kind="delivery", text=text)],
+                metadata=SampleMetadata(
+                    sample_id=sample_id,
+                    model=model,
+                    framing="route-first",
+                    context_hash="context",
+                ),
+            )
+
+        claims = aggregate_claims(
+            "behavior:form-submission",
+            [
+                sample("one", "model-a", "sends an email"),
+                sample("two", "model-b", "sends an email"),
+                sample("three", "model-a", "stores a message"),
+                sample("four", "model-b", "stores a message"),
+            ],
+            structural_check="consistent",
+        )
+
+        self.assertEqual([claim.confidence_tier for claim in claims], ["contested", "contested"])
+        self.assertEqual(claims[0].support, 0.5)
+        self.assertTrue(all(claim.cross_model_agreement for claim in claims))
+
+    def test_cir_claim_confirmation_requires_structural_corroboration(self):
+        sample = BehaviorSample(
+            sample_id="one",
+            unit_id="behavior:database",
+            claims=[BehaviorClaim(kind="operation", text="reads products")],
+            metadata=SampleMetadata(
+                sample_id="one", model="model-a", framing="top-down", context_hash="context"
+            ),
+        )
+
+        self.assertEqual(aggregate_claims("behavior:database", [sample], "consistent")[0].confidence_tier, "confirmed")
+        self.assertEqual(aggregate_claims("behavior:database", [sample], "not_checkable")[0].confidence_tier, "likely")
+
+    def test_engine_samples_a_behavior_unit_without_mutating_snapshot(self):
+        class SamplingModel:
+            def __init__(self):
+                self.calls = 0
+
+            def invoke(self, messages):
+                self.calls += 1
+                return BehaviorExtraction(claims=[BehaviorClaim(kind="signal", text="HTML form submission")])
+
+        class SamplingClient:
+            def __init__(self):
+                self.model = SamplingModel()
+
+            def with_structured_output(self, schema):
+                self.assert_schema = schema
+                return self.model
+
+        project = inspect_lamp_zip(project_archive(), "legacy.zip")
+        client = SamplingClient()
+        sampled = AzureLampMigrator(client=client).sample_behavior(
+            project, "behavior:html-form-submission", sample_count=2
+        )
+
+        unit = next(item for item in sampled.behaviors if item.unit_id == "behavior:html-form-submission")
+        self.assertEqual(len(unit.samples), 2)
+        self.assertEqual(unit.claims[0].confidence_tier, "confirmed")
+        self.assertEqual(len(project.cir.behaviors[0].samples), 0)
+
     def test_registry_composes_registered_adapters(self):
         class CustomAdapter:
             name = "custom-runtime"
@@ -169,6 +304,7 @@ class MigratorTests(unittest.TestCase):
         project = inspect_lamp_zip(project_archive(), "legacy.zip")
         migrator = AzureLampMigrator(client=FakeClient())
         migration_plan = migrator.analyze(project)
+        migration_plan = migration_plan.model_copy(update={"approval_status": "approved"})
         generated_project = migrator.generate(project, migration_plan)
         result = build_project_zip(project, migration_plan, generated_project)
         with zipfile.ZipFile(BytesIO(result)) as archive:
@@ -183,6 +319,21 @@ class MigratorTests(unittest.TestCase):
         migrator = AzureLampMigrator(client=FakeClient(generated('import axios from "axios";')))
         with self.assertRaisesRegex(ValueError, "unsupported import"):
             migrator.generate(project, plan())
+
+    def test_generation_rejects_unapproved_migration_roadmap(self):
+        project = inspect_lamp_zip(project_archive(), "legacy.zip")
+        migration_plan = plan().model_copy(update={
+            "migration_units": [MigrationUnit(
+                unit_id="route:/",
+                source_scope="/",
+                classification="migrate",
+                action="recreate route",
+                target_scope="app/page.tsx",
+            )],
+        })
+
+        with self.assertRaisesRegex(ValueError, "approved"):
+            AzureLampMigrator(client=FakeClient()).generate(project, migration_plan)
 
     def test_github_intake_pins_ref_and_reuses_archive_inspector(self):
         archive = project_archive()

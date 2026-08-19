@@ -109,9 +109,67 @@ def render_inventory() -> None:
         st.code("\n".join(inventory.source_files) or "No readable source files", language="text")
 
 
+def render_wesley() -> None:
+    assessment = st.session_state["project_snapshot"].wesley
+    if assessment is None:
+        return
+    st.markdown('<div class="rule"></div>', unsafe_allow_html=True)
+    st.markdown('<div class="eyebrow">02 / WESLEY SPECTRUM</div>', unsafe_allow_html=True)
+    st.header("Modernization disposition")
+    st.markdown(
+        f"**{assessment.overall_classification.upper()}** · {assessment.confidence} confidence"
+    )
+    for component in assessment.components:
+        st.markdown(
+            f"`{html.escape(component.component)}` → "
+            f"**{html.escape(component.classification)}** ({html.escape(component.confidence)})"
+        )
+        for reason in component.reasons:
+            st.markdown(f"- {html.escape(reason)}")
+    with st.expander("Static signals", expanded=False):
+        for signal in assessment.signals:
+            value = f" · {signal.value}" if signal.value else ""
+            st.markdown(
+                f"`{html.escape(signal.status)}` **{html.escape(signal.name)}**"
+                f"{html.escape(value)} · {html.escape(signal.severity)}"
+            )
+            if signal.evidence:
+                st.caption("; ".join(signal.evidence))
+    if assessment.limitations:
+        st.info("Unavailable evidence was not treated as healthy: " + "; ".join(assessment.limitations))
+
+
+def render_migration_blueprint() -> None:
+    blueprint = st.session_state["project_snapshot"].migration
+    if blueprint is None:
+        return
+    st.markdown('<div class="rule"></div>', unsafe_allow_html=True)
+    st.markdown('<div class="eyebrow">03 / MIGRATION ROADMAP</div>', unsafe_allow_html=True)
+    st.header("Migration roadmap")
+    st.markdown(
+        f"**Strategy:** `{html.escape(blueprint.strategy)}`  \n"
+        f"**Target:** `{html.escape(blueprint.target_profile)}`"
+    )
+    for wave in blueprint.waves:
+        with st.expander(f"{wave.wave_id}: {wave.title}"):
+            for unit_id in wave.unit_ids:
+                unit = next((item for item in blueprint.units if item.unit_id == unit_id), None)
+                if unit:
+                    st.markdown(
+                        f"- `{html.escape(unit.source_scope)}` → **{html.escape(unit.action)}** "
+                        f"({html.escape(unit.classification)})"
+                    )
+            st.caption("Exit criteria: " + "; ".join(wave.exit_criteria))
+    with st.expander("Capability matrix"):
+        for capability in blueprint.capabilities:
+            st.markdown(f"- **{capability.capability}**: `{capability.status}`")
+            if capability.evidence:
+                st.caption("; ".join(capability.evidence))
+
+
 def render_plan(plan: MigrationPlan) -> None:
     st.markdown('<div class="rule"></div>', unsafe_allow_html=True)
-    st.markdown('<div class="eyebrow">02 / ARCHITECTURE MAP</div>', unsafe_allow_html=True)
+    st.markdown('<div class="eyebrow">03 / ARCHITECTURE MAP</div>', unsafe_allow_html=True)
     st.header("Migration plan")
     st.markdown(plan.project_summary)
     for route in plan.routes:
@@ -159,7 +217,7 @@ def main() -> None:
                     st.session_state["project_snapshot"] = project
                     st.session_state["project_source"] = repository_key
                     st.session_state["github_source"] = source
-                    for key in ("migration_plan", "generated_project", "project_zip", "github_push_result", "migration_branch_name"):
+                    for key in ("migration_plan", "migration_approved", "generated_project", "project_zip", "github_push_result", "migration_branch_name"):
                         st.session_state.pop(key, None)
                     status.update(label=f"Pinned to {source.sha[:12]}", state="complete")
             except (RuntimeError, ValueError) as error:
@@ -182,19 +240,22 @@ def main() -> None:
             try:
                 st.session_state["project_snapshot"] = inspect_project(data, uploaded.name)
                 st.session_state["project_source"] = zip_key
-                for key in ("migration_plan", "generated_project", "project_zip", "github_source", "github_push_result", "migration_branch_name"):
+                for key in ("migration_plan", "migration_approved", "generated_project", "project_zip", "github_source", "github_push_result", "migration_branch_name"):
                     st.session_state.pop(key, None)
             except ValueError as error:
                 st.error(str(error))
                 return
 
     render_inventory()
+    render_wesley()
+    render_migration_blueprint()
     if st.button("Analyze migration with Azure OpenAI", type="primary", use_container_width=True):
         try:
             with st.status("Reading the legacy shape...", expanded=True) as status:
                 st.write("Sending bounded, secret-filtered source evidence to Azure OpenAI")
                 plan = AzureMigrationEngine().analyze(st.session_state["project_snapshot"])
                 st.session_state["migration_plan"] = plan
+                st.session_state["migration_approved"] = False
                 st.session_state.pop("generated_project", None)
                 st.session_state.pop("project_zip", None)
                 status.update(label="Migration plan ready", state="complete")
@@ -205,8 +266,15 @@ def main() -> None:
     if not plan:
         return
     render_plan(plan)
+    if not st.session_state.get("migration_approved", False):
+        st.warning("Review the migration roadmap and plan before generating target code.")
+        if st.button("Approve migration plan", type="primary", use_container_width=True):
+            st.session_state["migration_approved"] = True
+            st.session_state["migration_plan"] = plan.model_copy(update={"approval_status": "approved"})
+            st.rerun()
+        return
     st.markdown('<div class="rule"></div>', unsafe_allow_html=True)
-    st.markdown('<div class="eyebrow">03 / CODE GENERATION</div>', unsafe_allow_html=True)
+    st.markdown('<div class="eyebrow">04 / CODE GENERATION</div>', unsafe_allow_html=True)
     st.header("Build the modern starter")
     st.caption("Generation is constrained to presentation files. Backend behavior remains an explicit migration task.")
     if st.button("Generate guarded Next.js project", type="primary", use_container_width=True):

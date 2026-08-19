@@ -1,6 +1,8 @@
-# Source Adapter
+# Layer 0: Source Intake and Adapters
 
-Transit separates safe project intake from source interpretation.
+Layer 0 separates safe project intake from source interpretation. It produces
+the sanitized `ProjectSnapshot` consumed by Layer 1, the Canonical Intermediate
+Representation.
 
 ```text
 ZIP/GitHub archive

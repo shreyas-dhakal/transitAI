@@ -13,13 +13,20 @@ evidence later without changing the migration pipeline.
 2. Pins the GitHub branch or tag to an exact commit SHA and downloads GitHub's source archive for that commit.
 3. Validates ZIP paths, file counts, and compressed/uncompressed size limits.
 4. Reads bounded source files as text without extracting or executing the project.
-3. Omits sensitive filenames and redacts common inline credential assignments before model calls.
-4. Inventories likely routes, assets, database tables, and server-side behaviors locally.
-5. Uses Azure OpenAI structured output to produce a migration plan.
-6. Uses a second structured call to generate presentation-focused Next.js files.
-7. Rejects unsafe paths, API routes, unsupported imports, dangerous APIs, and incomplete output.
-9. Packages deterministic configuration, generated source, copied assets, and a migration report.
-10. For GitHub sources, creates a new branch with one migration commit in the same repository.
+5. Omits sensitive filenames and redacts common inline credential assignments before model calls.
+6. Inventories likely routes, assets, database tables, and server-side behaviors locally.
+7. Classifies the source into the Wesley Spectrum (`Retain`, `Replace`, `Evolve`, `Reengineer`, `Migrate`, or `Coexist`) using deterministic static signals.
+8. Uses Azure OpenAI structured output to produce a migration plan informed by that classification.
+9. Uses a second structured call to generate presentation-focused Next.js files.
+10. Rejects unsafe paths, API routes, unsupported imports, dangerous APIs, and incomplete output.
+11. Packages deterministic configuration, generated source, copied assets, and a migration report.
+12. For GitHub sources, creates a new branch with one migration commit in the same repository.
+
+Migration planning is modular and produces a deterministic roadmap before
+generation: strategy, target profile, migration units, capability statuses,
+ordered waves, validation gates, and approval state. Azure enriches that
+roadmap but does not choose around Wesley classifications or unsupported
+capabilities.
 
 The MVP deliberately does not recreate authentication, database access, email delivery, uploads, or arbitrary PHP behavior. It reports those as manual migration work and never executes uploaded or generated code.
 
@@ -200,9 +207,13 @@ main.py                    CLI entrypoint and developer guidance
 migrator/models.py         Pydantic data contracts
 migrator/archive.py        Safe ZIP intake and snapshot assembly
 migrator/adapters.py       Registry, composition, evidence, and graph findings
+migrator/cir.py            Canonical Intermediate Representation
+migrator/wesley.py         Deterministic Wesley Spectrum assessment
+migrator/migration.py      Modular migration blueprint and capability planning
 migrator/service.py        Azure calls, generated-code validation, packaging
 examples/lamp-site/        Small PHP fixture for manual testing
 sourcebot/                 Existing local Sourcebot integration files
+reversa-integration.md     Reversa methodology and integration contract
 ```
 
 Responsibilities are separated as follows:

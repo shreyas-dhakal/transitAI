@@ -7,15 +7,18 @@ implementation.
 
 ```text
 Legacy project
-     |
-     v
-Source adapters
-     |
-     v
-Canonical intermediate representation
-     |
-     v
-Migration strategy + capability matrix
+      |
+      v
+Layer 0: Source intake and adapters
+      |
+      v
+Layer 1: Canonical intermediate representation
+      |
+   v
+Layer 2: Legacy understanding
+      |
+      v
+Layer 3: Migration planning
      |
      v
 Target stack profile
@@ -37,13 +40,27 @@ The system is divided into independent stages:
 ```text
 Intake
   -> Evidence collection
-  -> Canonical model
-  -> Migration planning
+   -> Canonical model
+    -> Wesley Spectrum classification
+    -> Reversa discovery agents
+    -> Evidence reconciliation
+    -> Legacy specification / specs.md
+    -> Migration planning
   -> Human approval
   -> Target generation
   -> Validation
   -> Export
 ```
+
+The numbered layers are:
+
+- Layer 0: Source intake and adapters collect bounded, sanitized evidence.
+- Layer 1: Canonical intermediate representation normalizes that evidence into
+  a technology-neutral model.
+- Layer 2: Legacy understanding combines deterministic Transit evidence with
+  Reversa-derived interpretation and produces a traceable specification.
+- Layer 3: Migration planning selects a strategy, evaluates capabilities, and
+  records risks and assumptions before generation.
 
 The intake boundary is responsible for archive limits, path safety, sensitive
 file filtering, credential redaction, and bounded source context. No later
@@ -54,6 +71,10 @@ The core runtime consists of:
 - `SourceAdapter`: interprets normalized legacy evidence.
 - `ProjectSnapshot`: stores the validated inventory, source context, assets, and adapter findings.
 - `MigrationPlan`: describes the proposed modernization.
+- `WesleyAssessment`: records the deterministic modernization disposition and signal provenance.
+- `AgentEvidenceBundle`: stores independent Reversa-style agent claims and citations.
+- `LegacySpecification`: stores the reconciled understanding of the legacy system.
+- `MigrationBlueprint`: stores the deterministic migration roadmap derived from the evidence.
 - `TargetProfile`: describes the desired output stack and its rules.
 - `Generator`: produces target source files from the approved plan.
 - `Validator`: checks output using target-specific rules.
@@ -61,7 +82,7 @@ The core runtime consists of:
 The stages should be deterministic where possible and independently retryable
 in production.
 
-## 2. Source Adapters
+## 2. Layer 0: Source Intake and Adapters
 
 Source adapters collect evidence from legacy websites and applications. They
 interpret source files but do not execute them, make model calls, or access
@@ -100,7 +121,7 @@ The `AdapterRegistry` selects and composes adapters using deterministic
 evidence such as manifests, file extensions, and directory shape. Explicit
 adapter selection remains available for known internal platforms.
 
-## 3. Canonical Intermediate Representation
+## 3. Layer 1: Canonical Intermediate Representation
 
 The canonical intermediate representation, or CIR, describes application
 behavior without depending on PHP, Rails, Django, Next.js, or another specific
@@ -217,10 +238,133 @@ Potential profiles include:
 Source adapters and target profiles must remain independent. Adding Rails as a
 source should not require rewriting the Next.js generator.
 
-## 5. Migration Strategies
+## 5. Wesley Spectrum Classification
+
+Before planning, Transit runs a deterministic Wesley Spectrum assessment. It
+classifies the codebase as `retain`, `replace`, `evolve`, `reengineer`,
+`migrate`, or `coexist` using dependency, runtime, security, test, and
+repository-history evidence. Unknown evidence is preserved as unknown; it is
+never interpreted as a passing signal. ZIP uploads cannot establish commit
+recency, churn, maintainer response, or advisory-database CVEs.
+
+## 6. Layer 2: Reversa-Assisted Legacy Understanding
+
+Transit incorporates the useful analysis methodology from Reversa while
+keeping Transit’s intake boundary, CIR, Wesley assessment, and target
+validation authoritative. Reversa is treated as an agent methodology and
+artifact vocabulary, not as a replacement for the Transit runtime.
+
+The current repository contains the cloned Reversa source for adaptation. The
+deterministic Transit phases are implemented; the Reversa-style agent runtime,
+claim reconciliation, `LegacySpecification`, and `specs.md` renderer are
+planned integration components and must be added behind the contracts below.
+
+The discovery sequence is:
+
+```text
+Transit deterministic evidence
+          |
+          +--> Scout          surface and entry-point understanding
+          +--> Archaeologist module control-flow analysis
+          +--> Detective      business rules and state interpretation
+          +--> Architect      boundaries, integrations, and topology
+          +--> Writer         traceable specification drafting
+          +--> Reviewer       conflict and gap review
+          |
+          v
+Evidence reconciliation
+          |
+          v
+LegacySpecification + specs.md
+```
+
+The agents receive only a sanitized, bounded evidence pack containing the
+`ProjectInventory`, CIR, Wesley assessment, graph context, and selected source
+spans. They do not read the raw archive, execute legacy code, access the
+filesystem, or override deterministic findings.
+
+### Evidence authority
+
+- Deterministic adapter and CIR findings are authoritative facts about observed
+  source structure.
+- Agent claims are interpretations and must include evidence references.
+- Conflicting claims remain contested until resolved by evidence or a human.
+- Missing evidence is recorded as a gap, never silently converted into a fact.
+- Wesley security and modernization blockers cannot be removed by agent output.
+
+### Reversa-derived specialist roles
+
+| Role | Responsibility | Transit boundary |
+|---|---|---|
+| Scout | Inventory, technologies, entry points, modules | Enriches but does not replace adapters |
+| Archaeologist | Control flow, algorithms, data structures | Adds claims to CIR-linked units |
+| Detective | Business rules, states, permissions, decisions | Produces inferred claims with confidence |
+| Architect | C4 views, ERD, integrations, technical debt | Uses the structural graph and entities |
+| Writer | Operational, traceable specifications | Renders the canonical specification |
+| Reviewer | Cross-checks contradictions and gaps | Feeds the reconciliation phase |
+| Data Master | Deep schema and persistence analysis | Runs only when data signals exist |
+| Design System | UI tokens and screen behavior | Runs only when presentation signals exist |
+
+The Reversa installer, external-engine templates, standalone documentation
+viewer, and unrelated forward/debugger/pricing workflows are not part of the
+Transit runtime. Their useful prompts, schemas, catalogs, and templates may be
+adapted behind Transit’s analyzer interfaces.
+
+### Canonical specification contract
+
+`LegacySpecification` is the machine-readable source of truth for the
+understanding phase. It contains:
+
+- System summary and boundaries
+- Runtime architecture and modules
+- Routes, workflows, and business rules
+- State machines and permissions
+- Entities, data flows, and integrations
+- Dependencies and technical debt
+- Security findings
+- Unknowns and contested claims
+- Confidence report
+- File-to-claim traceability matrix
+
+Every claim has a status of `confirmed`, `inferred`, `contested`, or `gap`, a
+confidence level, and one or more source evidence references. `specs.md` is a
+deterministic human and coding-agent rendering of this contract. Markdown is
+not parsed back as the authoritative model.
+
+### Understanding artifacts
+
+The integrated phase uses a Transit-native artifact layout:
+
+```text
+artifacts/understanding/
+  specs.md
+  inventory.md
+  code-analysis.md
+  domain.md
+  architecture.md
+  dependencies.md
+  confidence-report.md
+  gaps.md
+  traceability/code-spec-matrix.md
+```
+
+Reversa-compatible `_reversa_sdd/` export may be added later, but internal
+phase contracts do not depend on Reversa’s filesystem layout.
+
+## 7. Layer 3: Migration Planning
 
 Transit should support multiple migration strategies because a full rewrite is
 not always the safest or most valuable option.
+
+The migration phase is an independent planning module. Its deterministic
+`MigrationBlueprint` contains the selected strategy, target profile, migration
+units, capability assessments, ordered migration waves, assumptions, and an
+approval status. Azure may add interpretation to the plan, but it cannot
+override deterministic Wesley classifications or capability boundaries.
+
+Generation consumes the approved `MigrationPlan`; it does not select a
+strategy, create migration waves, or decide how unsupported behavior should be
+implemented.
 
 ### Visual Rebuild
 
@@ -258,7 +402,7 @@ replacement project.
 The selected strategy should be based on evidence, risk, business priority,
 and the target profile's capabilities.
 
-## 6. Capability Matrix
+## 8. Capability Matrix
 
 The capability matrix prevents the product from promising unsupported behavior.
 It describes what each source-target combination can preserve automatically.
@@ -286,7 +430,7 @@ Each capability should include a status:
 
 The migration plan should include the capability status and evidence behind it.
 
-## 7. Separate Analysis from Generation
+## 9. Separate Analysis from Generation
 
 Analysis and generation must be separate stages with separate contracts.
 
@@ -330,7 +474,7 @@ Target project
 Generation must not decide that a behavior is safe merely because the model
 described it. Every generated artifact must pass deterministic validation.
 
-## 8. Target-Specific Validation
+## 10. Target-Specific Validation
 
 Validation is both generic and target-specific.
 
