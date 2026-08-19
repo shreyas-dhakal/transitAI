@@ -15,18 +15,30 @@ evidence later without changing the migration pipeline.
 4. Reads bounded source files as text without extracting or executing the project.
 5. Omits sensitive filenames and redacts common inline credential assignments before model calls.
 6. Inventories likely routes, assets, database tables, and server-side behaviors locally.
-7. Classifies the source into the Wesley Spectrum (`Retain`, `Replace`, `Evolve`, `Reengineer`, `Migrate`, or `Coexist`) using deterministic static signals.
-8. Uses Azure OpenAI structured output to produce a migration plan informed by that classification.
-9. Uses a second structured call to generate presentation-focused Next.js files.
-10. Rejects unsafe paths, API routes, unsupported imports, dangerous APIs, and incomplete output.
-11. Packages deterministic configuration, generated source, copied assets, and a migration report.
-12. For GitHub sources, creates a new branch with one migration commit in the same repository.
+7. Builds reverse documentation: modules, architecture diagrams, data flows, product intent, and executable scenarios.
+8. Detects WordPress/PHP side effects such as plugin hooks, WooCommerce events, form webhooks, and WP-Cron jobs.
+9. Optionally uses Azure OpenAI to enrich the deterministic documentation with semantic explanations and inferred product behavior.
+10. Requires understanding approval before producing a migration plan.
+11. Classifies the source into the Wesley Spectrum (`Retain`, `Replace`, `Evolve`, `Reengineer`, `Migrate`, or `Coexist`) using deterministic static signals.
+12. Uses Azure OpenAI structured output to produce a migration plan informed by that classification.
+13. Uses a second structured call to generate presentation-focused Next.js files.
+14. Rejects unsafe paths, API routes, unsupported imports, dangerous APIs, and incomplete output.
+15. Packages deterministic configuration, generated source, copied assets, and a migration report.
+16. For GitHub sources, creates a new branch with one migration commit in the same repository.
 
 Migration planning is modular and produces a deterministic roadmap before
 generation: strategy, target profile, migration units, capability statuses,
 ordered waves, validation gates, and approval state. Azure enriches that
 roadmap but does not choose around Wesley classifications or unsupported
 capabilities.
+
+The reverse-documentation contracts and Agent 2 baseline are implemented in
+`migrator/reverse_documentation.py`. It renders architecture, data-flow,
+product-plan, and executable scenario artifacts. WordPress/PHP hooks,
+WooCommerce events, form webhooks, and WP-Cron registrations are treated as
+first-class side effects. `AzureMigrationEngine.document()` can enrich this
+baseline with semantic explanations while preserving deterministic side effects.
+Full multi-agent orchestration and claim reconciliation remain future work.
 
 The MVP deliberately does not recreate authentication, database access, email delivery, uploads, or arbitrary PHP behavior. It reports those as manual migration work and never executes uploaded or generated code.
 
@@ -44,6 +56,16 @@ AZURE_OPENAI_ENDPOINT=https://your-resource.openai.azure.com/
 AZURE_OPENAI_API_KEY=your-api-key
 AZURE_OPENAI_API_VERSION=2024-10-21
 AZURE_OPENAI_DEPLOYMENT=your-deployment-name
+
+# Optional estimated USD pricing per 1M tokens.
+AZURE_INPUT_COST_PER_1M_TOKENS=
+AZURE_OUTPUT_COST_PER_1M_TOKENS=
+
+# Additional retries for Azure rate-limit responses. -1 waits and continues until success.
+TRANSIT_LLM_MAX_RETRIES=-1
+
+# Rate-limit responses use exponential backoff and honor Azure's Retry-After header.
+# The UI preserves deterministic review state if throttling persists.
 
 # Local GitHub access. Use a fine-grained token with Contents read/write for branch export.
 GITHUB_TOKEN=
@@ -70,7 +92,38 @@ For local testing with the included fixture:
 zip -r lamp-site.zip examples/lamp-site
 ```
 
-Select **ZIP upload**, upload `lamp-site.zip`, run analysis, review the plan, and generate the Next.js ZIP.
+Select **ZIP upload**, upload `lamp-site.zip`, inspect the reverse documentation, optionally enrich it with Azure, approve the understanding baseline, review the migration plan, and generate the Next.js ZIP.
+
+### Reverse Documentation Output
+
+The understanding stage produces a deterministic, traceable baseline. Its
+renderable artifacts include:
+
+```text
+specs.md
+architecture.md
+c4-context.md
+c4-containers.md
+c4-components.md
+data-flow.md
+product-plan.md
+scenarios/*.feature
+```
+
+The reverse-documentation contract is currently displayed and held in the
+Streamlit session. Rendered artifact files are not yet included in the
+downloaded migration ZIP.
+
+Azure enrichment receives a bounded projection of the evidence pack. Large
+module lists, graphs, and diagrams are compacted before the request while the
+full deterministic baseline remains in the local project snapshot.
+
+For WordPress/PHP projects, registered event behavior is documented alongside
+page behavior. A WooCommerce order hook, plugin webhook, or WP-Cron callback
+produces preservation scenarios for normal execution and external failure or
+duplicate delivery. Detection does not claim that the side effect has been
+migrated; the presentation-focused target still reports the implementation as
+manual work.
 
 ### GitHub Access
 
@@ -101,7 +154,7 @@ uv run python -m compileall app.py main.py migrator tests
 
 ## Current Boundary
 
-- Input: GitHub repository ref or one ZIP up to 15 MB compressed and 40 MB uncompressed
+- Input: GitHub repository ref or one ZIP up to 100 MB compressed and 250 MB uncompressed
 - Source: common web-project files including PHP, HTML, CSS, JavaScript, TypeScript, SQL, and common web assets
 - Output: Next.js App Router, React 19, TypeScript, content in a ZIP or a new GitHub branch
 - LLM: Azure OpenAI through `AzureChatOpenAI`
@@ -210,10 +263,12 @@ migrator/adapters.py       Registry, composition, evidence, and graph findings
 migrator/cir.py            Canonical Intermediate Representation
 migrator/wesley.py         Deterministic Wesley Spectrum assessment
 migrator/migration.py      Modular migration blueprint and capability planning
+migrator/specification.py  Legacy understanding and evidence contracts
+migrator/reverse_documentation.py  Reverse documentation and scenario artifacts
 migrator/service.py        Azure calls, generated-code validation, packaging
 examples/lamp-site/        Small PHP fixture for manual testing
 sourcebot/                 Existing local Sourcebot integration files
-reversa-integration.md     Reversa methodology and integration contract
+docs/                      Project architecture and integration documentation
 ```
 
 Responsibilities are separated as follows:
@@ -239,7 +294,13 @@ VALIDATE_ARCHIVE
 INSPECT_SOURCE
   │
   ▼
-REVIEW_INVENTORY
+BUILD_REVERSE_DOCUMENTATION
+  │
+  ▼
+OPTIONAL_AZURE_ENRICHMENT
+  │
+  ▼
+REVIEW_UNDERSTANDING
   │
   ▼
 PLAN_WITH_AZURE
@@ -266,6 +327,8 @@ CREATE_NEW_GITHUB_BRANCH (GitHub source only)
 Each stage has a different authority:
 
 - Deterministic inspection is authoritative for file names, file sizes, asset availability, likely routes, and detected patterns.
+- Reverse documentation is authoritative for observed side-effect registrations and source-linked baseline scenarios.
+- Azure semantic enrichment can add explanations and inferred behavior but cannot remove deterministic findings.
 - The migration plan is an AI-assisted interpretation of the evidence.
 - Generated source is a proposal and must pass deterministic validation.
 - Backend behavior is never inferred as implemented merely because the model describes it.
@@ -276,15 +339,18 @@ The ZIP is an untrusted input boundary. Transit processes it in memory and does 
 
 Current limits:
 
-- 15 MB compressed archive limit.
-- 40 MB total uncompressed member limit.
-- 800 file limit.
+- 100 MB compressed archive limit.
+- 250 MB total uncompressed member limit.
+- 50,000 raw archive-member limit.
+- 10,000 analyzable-file limit after common generated and dependency directories are excluded.
 - 300 KB per source-file context limit.
 - 120,000-character total model-context limit.
 - 5 MB per copied asset limit.
 - Encrypted ZIP members are rejected.
 - Absolute paths, drive-qualified paths, empty path segments, `.` segments, and `..` traversal are rejected.
 - Duplicate paths after common-root normalization are rejected.
+- Common generated and dependency directories such as `.git`, `node_modules`, virtual
+  environments, build output, caches, and coverage output are excluded automatically.
 
 Sensitive files are omitted before model context construction. The current deny list includes `.env`, credential files, private keys, database configuration files, WordPress configuration, and files under secrets or credentials directories. Common inline values assigned to passwords, API keys, tokens, and database passwords are redacted.
 

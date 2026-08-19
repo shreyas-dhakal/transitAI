@@ -8,10 +8,11 @@ from migrator.adapters import (
     GraphFindings,
     GraphNode,
     SourceAdapter,
+    SideEffectFinding,
     StructuralGraphAdapter,
     UniversalWebAdapter,
 )
-from migrator.archive import ProjectSnapshot, inspect_project
+from migrator.archive import ProjectSnapshot, inspect_lamp_zip, inspect_project
 from migrator.cir import (
     AggregatedClaim,
     BehaviorClaim,
@@ -40,9 +41,28 @@ from migrator.models import (
     WesleySignal,
 )
 from migrator.wesley import assess_project
+from migrator.specification import (
+    AgentResult,
+    Claim,
+    EvidenceRef,
+    LegacySpecification,
+    build_specification_seed,
+)
+from migrator.reverse_documentation import (
+    BehaviorScenario,
+    DataFlow,
+    DiagramArtifact,
+    ModuleDocumentation,
+    ProductPlan,
+    ReverseDocumentation,
+    SideEffect,
+    TraceabilityLink,
+    build_reverse_documentation,
+    render_reverse_artifacts,
+)
+from migrator.usage import UsageLedger, UsageRecord, extract_token_usage
 
 LampProject = ProjectSnapshot
-inspect_lamp_zip = inspect_project
 
 __all__ = [
     "AzureLampMigrator",
@@ -69,6 +89,7 @@ __all__ = [
     "GraphFindings",
     "GraphNode",
     "SourceAdapter",
+    "SideEffectFinding",
     "StructuralGraphAdapter",
     "UniversalWebAdapter",
     "WesleyAssessment",
@@ -80,6 +101,24 @@ __all__ = [
     "MigrationUnit",
     "MigrationWave",
     "build_migration_blueprint",
+    "AgentResult",
+    "Claim",
+    "EvidenceRef",
+    "LegacySpecification",
+    "build_specification_seed",
+    "BehaviorScenario",
+    "DataFlow",
+    "DiagramArtifact",
+    "ModuleDocumentation",
+    "ProductPlan",
+    "ReverseDocumentation",
+    "SideEffect",
+    "TraceabilityLink",
+    "build_reverse_documentation",
+    "render_reverse_artifacts",
+    "UsageLedger",
+    "UsageRecord",
+    "extract_token_usage",
     "build_project_zip",
     "build_project_files",
     "add_behavior_samples",

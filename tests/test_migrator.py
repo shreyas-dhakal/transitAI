@@ -3,6 +3,7 @@
 import unittest
 import json
 import zipfile
+from dataclasses import replace
 from io import BytesIO
 from urllib.error import HTTPError
 from unittest.mock import patch
@@ -25,8 +26,13 @@ from migrator.cir import (
     SampleMetadata,
     aggregate_claims,
 )
+from migrator.reverse_documentation import DiagramArtifact, ProductPlan, ReverseDocumentation, render_reverse_artifacts
+from migrator.service import LLMRateLimitError
+from migrator.archive import MAX_ARCHIVE_BYTES
 from migrator import github as github_module
 from migrator.models import GeneratedFile, GeneratedProject, MigrationPlan, MigrationUnit, RoutePlan
+from migrator.specification import AgentResult, Claim, EvidenceRef, LegacySpecification
+from migrator.usage import UsageLedger, extract_token_usage
 from migrator.wesley import assess_project
 
 
@@ -42,7 +48,30 @@ def project_archive() -> bytes:
     return output.getvalue()
 
 
-def plan() -> MigrationPlan:
+def wordpress_archive() -> bytes:
+    output = BytesIO()
+    with zipfile.ZipFile(output, "w") as archive:
+        archive.writestr(
+            "site/wp-content/plugins/order-sync/order-sync.php",
+            """<?php
+/*
+Plugin Name: Order Sync
+*/
+add_action('woocommerce_checkout_order_processed', 'sync_order');
+add_action('woocommerce_order_status_completed', 'notify_fulfillment');
+wp_schedule_event(time(), 'hourly', 'sync_orders');
+function sync_order($order_id) { wp_remote_post('https://example.test/orders'); }
+""",
+        )
+        archive.writestr(
+            "site/wp-content/plugins/forms/forms.php",
+            "<?php add_action('form_plugin_webhook', 'send_form_webhook');\n"
+            "wp_remote_post('https://example.test/forms');",
+        )
+    return output.getvalue()
+
+
+def plan(approval_status: str = "approved") -> MigrationPlan:
     return MigrationPlan(
         project_summary="A small public marketing site.",
         routes=[RoutePlan(source="/", target="/", purpose="Home page")],
@@ -54,6 +83,7 @@ def plan() -> MigrationPlan:
         unsupported_behaviors=["Form delivery"],
         risks=["Backend destination is unknown"],
         assumptions=["Public site"],
+        approval_status=approval_status,
     )
 
 
@@ -84,6 +114,42 @@ class FakeClient:
         return FakeStructuredModel(plan() if schema is MigrationPlan else self.generated_project)
 
 
+class CapturingDocumentationClient:
+    def __init__(self, response):
+        self.response = response
+        self.messages = []
+
+    def with_structured_output(self, schema, **kwargs):
+        model = self
+
+        class CapturingModel:
+            def invoke(self, messages):
+                model.messages.append(messages)
+                return model.response
+
+        return CapturingModel()
+
+
+class RetryingClient:
+    def __init__(self, failures=2):
+        self.failures = failures
+        self.calls = 0
+
+    def with_structured_output(self, schema, **kwargs):
+        client = self
+
+        class RetryingModel:
+            def invoke(self, messages):
+                client.calls += 1
+                if client.calls <= client.failures:
+                    error = RuntimeError("rate limit exceeded")
+                    error.status_code = 429
+                    raise error
+                return plan()
+
+        return RetryingModel()
+
+
 class MigratorTests(unittest.TestCase):
     def test_github_url_parser_accepts_repository_and_branch_links(self):
         self.assertEqual(
@@ -99,6 +165,7 @@ class MigratorTests(unittest.TestCase):
 
     def test_archive_is_bounded_redacted_and_inventoried(self):
         project = inspect_lamp_zip(project_archive(), "legacy.zip")
+        self.assertEqual(project.inventory.adapter, "universal-web")
         self.assertEqual(project.inventory.route_candidates, ["/", "/page"])
         self.assertEqual(project.inventory.database_tables, ["messages"])
         self.assertIn("HTML form submission", project.inventory.behavior_signals)
@@ -106,6 +173,33 @@ class MigratorTests(unittest.TestCase):
         self.assertNotIn("also-do-not-send", project.source_context)
         self.assertIn("[REDACTED]", project.source_context)
         self.assertEqual(project.inventory.asset_urls, ["/legacy/assets/logo.svg"])
+
+    def test_archive_limit_allows_archives_up_to_100_mb(self):
+        self.assertEqual(MAX_ARCHIVE_BYTES, 100 * 1024 * 1024)
+        output = BytesIO()
+        with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_STORED) as archive:
+            archive.writestr("legacy/large-asset.bin", b"x" * (16 * 1024 * 1024))
+
+        project = inspect_project(output.getvalue(), "large.zip")
+
+        self.assertEqual(project.inventory.file_count, 1)
+
+    def test_archive_automatically_ignores_generated_and_dependency_files(self):
+        output = BytesIO()
+        with zipfile.ZipFile(output, "w") as archive:
+            archive.writestr("legacy/index.php", "<?php echo 'home';")
+            for index in range(801):
+                archive.writestr(
+                    f"legacy/node_modules/package-{index}/index.js",
+                    "module.exports = {};",
+                )
+
+        project = inspect_project(output.getvalue(), "large-project.zip")
+
+        self.assertEqual(project.inventory.file_count, 1)
+        self.assertEqual(project.inventory.source_file_count, 1)
+        self.assertEqual(project.inventory.skipped_ignored_file_count, 801)
+        self.assertEqual(len(project.inventory.skipped_ignored_files), 100)
 
     def test_rejects_archive_path_traversal(self):
         output = BytesIO()
@@ -139,9 +233,208 @@ class MigratorTests(unittest.TestCase):
         self.assertEqual(project.cir.routes[0].pattern, "/")
         self.assertIn("messages", [entity.name for entity in project.cir.entities])
         self.assertTrue(project.cir.provenance.sample_set_hash)
+        self.assertIsNotNone(project.specification)
+        self.assertEqual(project.specification.source_hash, project.cir.provenance.source_hash)
+        self.assertTrue(any(claim.category == "route" for claim in project.specification.claims))
+        self.assertTrue(any(claim.category == "data-flow" for claim in project.specification.claims))
         self.assertIsNotNone(project.migration)
         self.assertEqual(project.migration.target_profile, "nextjs-app-router")
         self.assertTrue(project.migration.waves)
+
+    def test_wordpress_side_effects_are_first_class_reverse_documentation(self):
+        project = inspect_project(wordpress_archive(), "wordpress.zip")
+
+        self.assertIn("WordPress", project.inventory.detected_technologies)
+        self.assertIsNotNone(project.reverse_documentation)
+        documentation = project.reverse_documentation
+        kinds = {effect.kind for effect in documentation.side_effects}
+        triggers = {effect.trigger for effect in documentation.side_effects}
+        self.assertIn("woocommerce-hook", kinds)
+        self.assertIn("wordpress-cron", kinds)
+        self.assertIn("webhook", kinds)
+        self.assertIn("woocommerce_checkout_order_processed", triggers)
+        self.assertTrue(all(effect.start_line >= 1 for effect in documentation.side_effects))
+        self.assertTrue(any(scenario.side_effect_id for scenario in documentation.scenarios))
+
+        artifacts = render_reverse_artifacts(documentation)
+        self.assertIn("architecture.md", artifacts)
+        self.assertIn("product-plan.md", artifacts)
+        scenario_files = [path for path in artifacts if path.endswith(".feature")]
+        self.assertGreaterEqual(len(scenario_files), 6)
+        self.assertTrue(any("woocommerce" in artifacts[path].lower() for path in scenario_files))
+
+    def test_semantic_documentation_cannot_drop_deterministic_side_effects(self):
+        project = inspect_project(wordpress_archive(), "wordpress.zip")
+
+        class SemanticClient:
+            def with_structured_output(self, schema, **kwargs):
+                return FakeStructuredModel(ReverseDocumentation(
+                    project_name="wordpress",
+                    summary="Semantic product summary.",
+                    product_plan=ProductPlan(purpose="Synchronize orders."),
+                ))
+
+        enriched = AzureLampMigrator(client=SemanticClient()).document(project)
+        self.assertEqual(enriched.summary, "Semantic product summary.")
+        self.assertEqual(
+            {effect.effect_id for effect in enriched.side_effects},
+            {effect.effect_id for effect in project.reverse_documentation.side_effects},
+        )
+        self.assertTrue(enriched.scenarios)
+
+    def test_semantic_documentation_receives_deterministic_evidence(self):
+        project = inspect_project(wordpress_archive(), "wordpress.zip")
+        client = CapturingDocumentationClient(ReverseDocumentation(
+            project_name="wordpress",
+            summary="Semantic product summary.",
+            product_plan=ProductPlan(purpose="Synchronize orders."),
+        ))
+
+        AzureLampMigrator(client=client).document(project)
+
+        payload = client.messages[0][1]["content"]
+        self.assertIn("DETERMINISTIC REVERSE DOCUMENTATION:", payload)
+        self.assertIn("woocommerce_checkout_order_processed", payload)
+
+    def test_semantic_documentation_payload_stays_below_provider_limit(self):
+        project = inspect_project(wordpress_archive(), "wordpress.zip")
+        documentation = project.reverse_documentation.model_copy(update={
+            "diagrams": [DiagramArtifact(
+                artifact_id="diagram:large",
+                title="Large diagram",
+                diagram_type="c4-components",
+                mermaid="x" * 20_000_000,
+            )],
+        })
+        project = replace(project, reverse_documentation=documentation)
+        client = CapturingDocumentationClient(ReverseDocumentation(
+            project_name="wordpress",
+            summary="Semantic product summary.",
+            product_plan=ProductPlan(purpose="Synchronize orders."),
+        ))
+
+        AzureLampMigrator(client=client).document(project)
+
+        payload = client.messages[0][1]["content"]
+        self.assertLess(len(payload.encode("utf-8")), 10 * 1024 * 1024)
+        self.assertIn("[truncated]", payload)
+
+    def test_llm_rate_limits_are_retried_with_exponential_backoff(self):
+        project = inspect_lamp_zip(project_archive(), "legacy.zip")
+        client = RetryingClient(failures=2)
+
+        with patch("migrator.service.time.sleep") as sleep:
+            result = AzureLampMigrator(client=client).analyze(project)
+
+        self.assertEqual(result.project_summary, "A small public marketing site.")
+        self.assertEqual(client.calls, 3)
+        self.assertEqual([call.args[0] for call in sleep.call_args_list], [2.0, 4.0])
+
+    def test_exhausted_llm_rate_limit_becomes_a_specific_error(self):
+        project = inspect_lamp_zip(project_archive(), "legacy.zip")
+        client = RetryingClient(failures=10)
+
+        with patch("migrator.service.time.sleep"), patch(
+            "migrator.service.os.getenv", return_value="4"
+        ):
+            with self.assertRaises(LLMRateLimitError) as context:
+                AzureLampMigrator(client=client).analyze(project)
+
+        self.assertEqual(client.calls, 5)
+        self.assertIn("rate limit persisted", str(context.exception))
+
+    def test_legacy_specification_contract_preserves_claim_traceability(self):
+        evidence = EvidenceRef(
+            source="cir",
+            file="index.php",
+            start_line=4,
+            end_line=8,
+            node_id="file:index.php",
+            excerpt_hash="abc123",
+        )
+        claim = Claim(
+            claim_id="claim:route-home",
+            category="route",
+            statement="The application serves a public home route.",
+            status="confirmed",
+            confidence="high",
+            evidence_refs=[evidence],
+            supporting_agents=["deterministic-seed"],
+        )
+        result = AgentResult(
+            agent_name="archaeologist",
+            run_id="run-1",
+            claims=[claim],
+            model="test-model",
+            prompt_version="test-1",
+        )
+        specification = LegacySpecification(
+            project_name="legacy",
+            project_summary="A legacy site.",
+            routes=["/"],
+            claims=[claim],
+            agent_results=[result],
+            source_hash="source-hash",
+        )
+
+        self.assertEqual(specification.claims[0].evidence_refs[0].source, "cir")
+        self.assertEqual(specification.agent_results[0].claims[0].claim_id, "claim:route-home")
+
+    def test_legacy_specification_rejects_uncontrolled_claim_values(self):
+        with self.assertRaises(ValueError):
+            Claim(
+                claim_id="claim:invalid",
+                category="guess",
+                statement="Unsupported category",
+                status="confirmed",
+                confidence="high",
+            )
+
+    def test_usage_ledger_extracts_langchain_metadata_and_estimates_cost(self):
+        response = {
+            "response_metadata": {
+                "model_name": "gpt-test",
+                "token_usage": {
+                    "prompt_tokens": 1_000,
+                    "completion_tokens": 500,
+                    "total_tokens": 1_500,
+                },
+            }
+        }
+        self.assertEqual(extract_token_usage(response), (1_000, 500, 1_500))
+        ledger = UsageLedger(input_cost_per_million=1.0, output_cost_per_million=2.0)
+        ledger.record(response, "migration_analysis")
+
+        self.assertEqual(ledger.total_tokens, 1_500)
+        self.assertEqual(ledger.prompt_tokens, 1_000)
+        self.assertEqual(ledger.completion_tokens, 500)
+        self.assertEqual(ledger.estimated_cost, 0.002)
+        self.assertIn("1.5k tokens", ledger.compact_summary())
+
+    def test_usage_ledger_reports_cost_unavailable_without_rates(self):
+        ledger = UsageLedger()
+        ledger.record({"usage_metadata": {"input_tokens": 10, "output_tokens": 5}}, "target_generation")
+
+        self.assertIsNone(ledger.estimated_cost)
+        self.assertIn("cost unavailable", ledger.compact_summary())
+
+    def test_migration_blueprint_has_resolvable_waves_and_dependencies(self):
+        project = inspect_lamp_zip(project_archive(), "legacy.zip")
+        blueprint = project.migration
+        unit_ids = {unit.unit_id for unit in blueprint.units}
+        wave_ids = [wave.wave_id for wave in blueprint.waves]
+
+        self.assertEqual(len(wave_ids), len(set(wave_ids)))
+        self.assertTrue(all(
+            unit_id in unit_ids
+            for wave in blueprint.waves
+            for unit_id in wave.unit_ids
+        ))
+        self.assertTrue(all(
+            dependency in unit_ids
+            for unit in blueprint.units
+            for dependency in unit.dependencies
+        ))
 
     def test_migration_blueprint_is_carried_into_azure_plan(self):
         project = inspect_lamp_zip(project_archive(), "legacy.zip")
@@ -320,9 +613,36 @@ class MigratorTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "unsupported import"):
             migrator.generate(project, plan())
 
+    def test_rejects_unresolved_internal_generated_import(self):
+        project = inspect_lamp_zip(project_archive(), "legacy.zip")
+        migrator = AzureLampMigrator(client=FakeClient(generated('import Missing from "./missing";')))
+
+        with self.assertRaisesRegex(ValueError, "unresolved internal import"):
+            migrator.generate(project, plan())
+
+    def test_rejects_absolute_generated_paths(self):
+        project = inspect_lamp_zip(project_archive(), "legacy.zip")
+        unsafe = generated()
+        unsafe.files[1].path = "/app/page.tsx"
+
+        with self.assertRaisesRegex(ValueError, "absolute path"):
+            AzureLampMigrator(client=FakeClient(unsafe)).generate(project, plan())
+
+    def test_rejects_duplicate_generated_paths_after_normalization(self):
+        project = inspect_lamp_zip(project_archive(), "legacy.zip")
+        duplicate = generated()
+        duplicate.files.append(GeneratedFile(
+            path="app//page.tsx",
+            content="export default function Duplicate() { return null; }",
+            purpose="Duplicate",
+        ))
+
+        with self.assertRaisesRegex(ValueError, "duplicate file"):
+            AzureLampMigrator(client=FakeClient(duplicate)).generate(project, plan())
+
     def test_generation_rejects_unapproved_migration_roadmap(self):
         project = inspect_lamp_zip(project_archive(), "legacy.zip")
-        migration_plan = plan().model_copy(update={
+        migration_plan = plan(approval_status="pending").model_copy(update={
             "migration_units": [MigrationUnit(
                 unit_id="route:/",
                 source_scope="/",
@@ -334,6 +654,14 @@ class MigratorTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "approved"):
             AzureLampMigrator(client=FakeClient()).generate(project, migration_plan)
+
+    def test_generation_rejects_unapproved_plan_without_migration_units(self):
+        project = inspect_lamp_zip(project_archive(), "legacy.zip")
+
+        with self.assertRaisesRegex(ValueError, "approved"):
+            AzureLampMigrator(client=FakeClient()).generate(
+                project, plan(approval_status="pending")
+            )
 
     def test_github_intake_pins_ref_and_reuses_archive_inspector(self):
         archive = project_archive()

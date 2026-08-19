@@ -18,6 +18,23 @@ class AdapterFindings:
     behavior_signals: list[str]
     graph: GraphFindings | None = None
     adapter_name: str = ""
+    side_effects: list[SideEffectFinding] | None = None
+
+
+@dataclass(frozen=True)
+class SideEffectFinding:
+    """A statically observed event-driven behavior in legacy source."""
+
+    effect_id: str
+    trigger: str
+    callback: str | None
+    kind: str
+    source_path: str
+    start_line: int
+    end_line: int
+    evidence: str
+    external_effect: str | None = None
+    plugin: str | None = None
 
 
 @dataclass(frozen=True)
@@ -126,6 +143,11 @@ def merge_findings(findings: list[AdapterFindings]) -> AdapterFindings:
     return AdapterFindings(
         detected, routes, tables, behaviors, graph,
         adapter_name="+".join(finding.adapter_name for finding in findings),
+        side_effects=[
+            effect
+            for finding in findings
+            for effect in (finding.side_effects or [])
+        ] or None,
     )
 
 
@@ -199,6 +221,83 @@ def _behavior_signals(combined_text: str) -> list[str]:
     return [label for label, pattern in checks if re.search(pattern, combined_text)]
 
 
+def _line_number(content: str, offset: int) -> int:
+    return content.count("\n", 0, offset) + 1
+
+
+def _callback_name(content: str, start: int) -> str | None:
+    window = content[start:start + 400]
+    match = re.search(r"(?:function\s+|['\"])([A-Za-z_][\w-]*)", window)
+    return match.group(1) if match else None
+
+
+def _wordpress_side_effects(sources: dict[str, str]) -> list[SideEffectFinding]:
+    """Extract WordPress event registrations without executing PHP."""
+    effects: list[SideEffectFinding] = []
+    hook_pattern = re.compile(
+        r"(?i)\b(add_action|add_filter)\s*\(\s*['\"]([^'\"]+)['\"]"
+    )
+    cron_pattern = re.compile(
+        r"(?i)\b(wp_schedule_event|wp_next_scheduled|wp_clear_scheduled_hook)\s*\("
+    )
+    webhook_pattern = re.compile(
+        r"(?i)\b(webhook|wp_remote_(?:get|post|request)|curl_exec)"
+    )
+    for path, content in sorted(sources.items()):
+        lowered = path.lower()
+        is_php = lowered.endswith((".php", ".phtml"))
+        if not is_php:
+            continue
+        plugin_match = re.search(r"(?im)^\s*\*?\s*plugin\s+name\s*:\s*(.+?)\s*$", content)
+        plugin = plugin_match.group(1).strip() if plugin_match else None
+        for match in hook_pattern.finditer(content):
+            trigger = match.group(2)
+            callback = _callback_name(content, match.end())
+            kind = "woocommerce-hook" if trigger.lower().startswith(("woocommerce_", "woocommerce")) else "wordpress-hook"
+            external = "order or commerce side effect" if kind == "woocommerce-hook" else None
+            effects.append(SideEffectFinding(
+                effect_id=f"side-effect:{path}:{_line_number(content, match.start())}:{trigger}",
+                trigger=trigger,
+                callback=callback,
+                kind=kind,
+                source_path=path,
+                start_line=_line_number(content, match.start()),
+                end_line=_line_number(content, match.end()),
+                evidence=match.group(0),
+                external_effect=external,
+                plugin=plugin,
+            ))
+        for match in cron_pattern.finditer(content):
+            effects.append(SideEffectFinding(
+                effect_id=f"side-effect:{path}:{_line_number(content, match.start())}:cron",
+                trigger="wp-cron",
+                callback=_callback_name(content, match.end()),
+                kind="wordpress-cron",
+                source_path=path,
+                start_line=_line_number(content, match.start()),
+                end_line=_line_number(content, match.end()),
+                evidence=match.group(0),
+                external_effect="scheduled background work",
+                plugin=plugin,
+            ))
+        if webhook_pattern.search(content):
+            match = webhook_pattern.search(content)
+            assert match is not None
+            effects.append(SideEffectFinding(
+                effect_id=f"side-effect:{path}:{_line_number(content, match.start())}:webhook",
+                trigger="form or integration webhook",
+                callback=None,
+                kind="webhook",
+                source_path=path,
+                start_line=_line_number(content, match.start()),
+                end_line=_line_number(content, match.end()),
+                evidence=match.group(0),
+                external_effect="outbound HTTP delivery",
+                plugin=plugin,
+            ))
+    return effects
+
+
 class UniversalWebAdapter:
     """Broad web-project adapter with no required framework assumption.
 
@@ -218,6 +317,13 @@ class UniversalWebAdapter:
 
     def inspect(self, sources: dict[str, str]) -> AdapterFindings:
         combined_text = "\n".join(sources.values())
+        side_effects = _wordpress_side_effects(sources)
+        behavior_signals = _behavior_signals(combined_text)
+        behavior_signals.extend(
+            effect.trigger
+            for effect in side_effects
+            if effect.trigger not in behavior_signals
+        )
         return AdapterFindings(
             detected_technologies=_technology_signals(list(sources), combined_text),
             route_candidates=_route_candidates(list(sources)),
@@ -229,7 +335,8 @@ class UniversalWebAdapter:
                     )
                 )
             ),
-            behavior_signals=_behavior_signals(combined_text),
+            behavior_signals=behavior_signals,
+            side_effects=side_effects,
         )
 
 

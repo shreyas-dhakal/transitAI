@@ -7,11 +7,19 @@ does not delegate its security boundary or canonical data model to Reversa.
 ## Current Status
 
 Transit currently has the deterministic intake, adapter, CIR, Wesley, and
-migration-blueprint phases. The Reversa repository has been cloned and reviewed
-as integration source material. The typed agent orchestration,
-`LegacySpecification`, reconciliation, and `specs.md` generation phases are
-the next implementation slice; they are described here as target contracts,
-not as already-running behavior.
+migration-blueprint phases. The typed `EvidenceRef`, `Claim`, `AgentResult`,
+and `LegacySpecification` contracts are implemented in
+`migrator/specification.py`. The Agent 2 reverse-documentation contracts and
+deterministic artifact renderer are implemented in
+`migrator/reverse_documentation.py`. Every snapshot now gets a reverse-documentation
+model that can render architecture, data-flow, product-plan, and executable
+scenario artifacts, including
+first-class WordPress/PHP plugin hooks, WooCommerce events, form webhooks,
+and WP-Cron side effects. `AzureMigrationEngine.document()` optionally adds
+semantic explanations and inferred product behavior while preserving the
+deterministic baseline. Full specialist-agent orchestration and claim
+reconciliation are the next layer; deterministic source facts remain
+authoritative.
 
 ## Why They Are Combined
 
@@ -46,10 +54,12 @@ Source intake
   -> Transit adapters
   -> Transit CIR
   -> Wesley Spectrum
-  -> Reversa-style discovery agents
-  -> Claim reconciliation
-  -> LegacySpecification
-  -> specs.md
+  -> Agent 2 deterministic reverse-documentation baseline
+  -> Optional Azure semantic enrichment
+  -> Understanding review
+  -> Reversa-style discovery agents (planned)
+  -> Claim reconciliation (planned)
+  -> LegacySpecification / reverse artifacts
   -> MigrationBlueprint
   -> Azure MigrationPlan
   -> Human approval
@@ -59,6 +69,11 @@ Source intake
 
 The phases are modular. Each phase has a contract, an artifact, and an
 independent test boundary.
+
+The running product currently implements the first two Agent 2 layers: safe
+deterministic extraction and one optional Azure structured-output enrichment
+call. The Reversa roles below describe the intended specialist pipeline and
+are not currently invoked as independent agents.
 
 ## Reversa Roles
 
@@ -136,6 +151,31 @@ Cross-checks:
 - Unsupported migration assumptions
 - Low-confidence areas requiring human review
 
+### Agent 2 Reverse-Documentation Outputs
+
+Agent 2 produces a behavior contract before migration planning:
+
+- Architecture diagrams: C4 context, containers, components, and data flow
+- Module map: source modules, responsibilities, dependencies, and evidence
+- Inferred product plan: purpose, users, capabilities, workflows, assumptions, and questions
+- Executable scenarios: Gherkin-style preservation scenarios for routes and event behavior
+- Side-effect register: callbacks, triggers, plugins, external effects, and source spans
+
+#### WordPress/PHP Side Effects
+
+WordPress event behavior is treated as first-class functionality, not as an
+implementation detail. The deterministic adapter records:
+
+- `add_action` and `add_filter` registrations
+- WooCommerce order, checkout, payment, and status hooks
+- Form-plugin webhook and outbound HTTP signals
+- `wp_schedule_event`, scheduled callbacks, and cron cleanup
+
+Each detected side effect produces scenarios for normal execution and external
+failure or duplicate delivery. Scenarios are preservation contracts, not proof
+that the target implementation exists. The presentation-only Next.js profile
+continues to classify these behaviors as manual engineering work.
+
 ## Evidence Model
 
 All agent results are normalized into claims:
@@ -176,8 +216,8 @@ Rules:
 
 ## Canonical Specification
 
-`LegacySpecification` is the source of truth after reconciliation. It should
-contain:
+`LegacySpecification` is the source of truth after reconciliation. Its initial
+typed contract is implemented and should contain:
 
 - Project summary
 - System boundaries
@@ -210,9 +250,15 @@ artifacts/understanding/
   code-analysis.md
   domain.md
   architecture.md
+  c4-context.md
+  c4-containers.md
+  c4-components.md
+  data-flow.md
+  product-plan.md
   dependencies.md
   confidence-report.md
   gaps.md
+  scenarios/*.feature
   traceability/code-spec-matrix.md
 
 artifacts/migration/

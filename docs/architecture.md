@@ -255,21 +255,27 @@ validation authoritative. Reversa is treated as an agent methodology and
 artifact vocabulary, not as a replacement for the Transit runtime.
 
 The current repository contains the cloned Reversa source for adaptation. The
-deterministic Transit phases are implemented; the Reversa-style agent runtime,
-claim reconciliation, `LegacySpecification`, and `specs.md` renderer are
-planned integration components and must be added behind the contracts below.
+deterministic Transit phases, typed specification contracts, reverse-documentation
+contracts, side-effect extraction, scenario generation, deterministic artifact
+renderer, and optional Azure semantic enrichment are implemented. The
+reverse-documentation baseline is attached to the `ProjectSnapshot` and
+contains confirmed adapter, CIR, and Wesley evidence. Full multi-agent
+orchestration and claim reconciliation remain planned integration components
+and must use those contracts.
 
 The discovery sequence is:
 
 ```text
 Transit deterministic evidence
           |
-          +--> Scout          surface and entry-point understanding
-          +--> Archaeologist module control-flow analysis
-          +--> Detective      business rules and state interpretation
-          +--> Architect      boundaries, integrations, and topology
-          +--> Writer         traceable specification drafting
-          +--> Reviewer       conflict and gap review
+           +--> Agent 2 baseline: modules, side effects, scenarios, diagrams
+           +--> Optional Azure semantic enrichment
+           +--> Scout          surface and entry-point understanding [planned]
+           +--> Archaeologist module control-flow analysis [planned]
+           +--> Detective      business rules and state interpretation [planned]
+           +--> Architect      boundaries, integrations, and topology [planned]
+           +--> Writer         traceable specification drafting [planned]
+           +--> Reviewer       conflict and gap review [planned]
           |
           v
 Evidence reconciliation
@@ -278,10 +284,11 @@ Evidence reconciliation
 LegacySpecification + specs.md
 ```
 
-The agents receive only a sanitized, bounded evidence pack containing the
-`ProjectInventory`, CIR, Wesley assessment, graph context, and selected source
-spans. They do not read the raw archive, execute legacy code, access the
-filesystem, or override deterministic findings.
+The current semantic pass receives only a sanitized, bounded evidence pack
+containing the `ProjectInventory`, CIR, Wesley assessment, deterministic
+reverse documentation, graph context, and selected source spans. It does not
+read the raw archive, execute legacy code, access the filesystem, or override
+deterministic findings. Future specialist agents will use the same boundary.
 
 ### Evidence authority
 
@@ -305,6 +312,19 @@ filesystem, or override deterministic findings.
 | Data Master | Deep schema and persistence analysis | Runs only when data signals exist |
 | Design System | UI tokens and screen behavior | Runs only when presentation signals exist |
 
+Agent 2 also produces the first deterministic reverse-documentation baseline:
+
+| Output | Contents |
+|---|---|
+| Architecture diagrams | C4 context, containers, components, and Mermaid data-flow views |
+| Module map | Structural source modules, paths, and evidence links |
+| Product plan | Inferred purpose, users, capabilities, workflows, assumptions, and open questions |
+| Executable scenarios | Gherkin-style preservation scenarios linked to routes and side effects |
+| Side-effect register | Plugin hooks, WooCommerce events, webhooks, cron jobs, callbacks, and source spans |
+
+Semantic enrichment may add explanations and inferred behavior, but it cannot
+remove or downgrade deterministic side effects.
+
 The Reversa installer, external-engine templates, standalone documentation
 viewer, and unrelated forward/debugger/pricing workflows are not part of the
 Transit runtime. Their useful prompts, schemas, catalogs, and templates may be
@@ -313,7 +333,8 @@ adapted behind Transit’s analyzer interfaces.
 ### Canonical specification contract
 
 `LegacySpecification` is the machine-readable source of truth for the
-understanding phase. It contains:
+understanding phase. The initial typed contract is implemented in
+`migrator/specification.py` and contains:
 
 - System summary and boundaries
 - Runtime architecture and modules
@@ -342,9 +363,15 @@ artifacts/understanding/
   code-analysis.md
   domain.md
   architecture.md
+  c4-context.md
+  c4-containers.md
+  c4-components.md
+  data-flow.md
+  product-plan.md
   dependencies.md
   confidence-report.md
   gaps.md
+  scenarios/*.feature
   traceability/code-spec-matrix.md
 ```
 

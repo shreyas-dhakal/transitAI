@@ -16,6 +16,8 @@ class ProjectInventory(BaseModel):
     database_tables: list[str]
     behavior_signals: list[str]
     skipped_sensitive_files: list[str]
+    skipped_ignored_files: list[str] = Field(default_factory=list)
+    skipped_ignored_file_count: int = 0
     truncated: bool = False
     adapter_sources: list[str] = Field(default_factory=list)
 
